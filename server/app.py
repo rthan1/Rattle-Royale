@@ -9,11 +9,13 @@ runs out, the closest player wins.
 """
 
 import asyncio
+import io
 import json
 import logging
 import time
 from pathlib import Path
 
+import segno
 from aiohttp import ClientConnectionError, WSMsgType, web
 
 from server.bridge import Bridge
@@ -23,6 +25,7 @@ from server.lobby import PULL_TICK_SECONDS, LobbyBook, LobbyError
 HOST = "0.0.0.0"
 PORT = 8080
 ROBOT_IMAGE = Path(__file__).resolve().parent / "static" / "robot.svg"
+QR_MAX_LENGTH = 200
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +131,8 @@ PAGE = """<!DOCTYPE html>
     @media (prefers-reduced-motion: reduce) {
       #shakes.pulse { animation: none; }
     }
+    #invite { margin: 0 0 1rem; }
+    #invite-qr { display: block; width: 9.25rem; height: 9.25rem; margin: 0 auto 0.6rem; border-radius: 0.4rem; background: #fff; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
   </style>
 </head>
@@ -152,6 +157,10 @@ PAGE = """<!DOCTYPE html>
       <p id="result-detail" hidden></p>
       <p id="lobby-code"></p>
       <p id="lobby-count"></p>
+      <div id="invite" hidden>
+        <img id="invite-qr" alt="QR code to join this lobby">
+        <button id="share" type="button" class="quiet">Share invite link</button>
+      </div>
       <p id="your-seat"></p>
       <p id="your-mark"></p>
       <p id="chase" hidden></p>
@@ -542,6 +551,16 @@ PAGE = """<!DOCTYPE html>
         message.players.length + " of " + message.max;
       document.getElementById("start").hidden = !(message.creator && !message.started);
       document.getElementById("rematch").hidden = !(message.creator && message.finished);
+      const invite = document.getElementById("invite");
+      invite.hidden = message.started || message.players.length >= message.max;
+      if (!invite.hidden) {
+        inviteLink = (message.public_url || location.origin) + "/?code=" + encodeURIComponent(message.code);
+        const qr = document.getElementById("invite-qr");
+        const source = "/qr.svg?data=" + encodeURIComponent(inviteLink);
+        if (qr.getAttribute("src") !== source) {
+          qr.setAttribute("src", source);
+        }
+      }
       const waiting = document.getElementById("waiting");
       waiting.hidden = message.creator || (message.started && !message.finished);
       waiting.textContent = message.finished
@@ -725,6 +744,29 @@ PAGE = """<!DOCTYPE html>
     document.getElementById("start").addEventListener("click", () => {
       send({ type: "start" });
     });
+    let inviteLink = "";
+    document.getElementById("share").addEventListener("click", async () => {
+      const button = document.getElementById("share");
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: "Join my Rattle Royale lobby", url: inviteLink });
+          return;
+        } catch (error) {
+          if (error && error.name === "AbortError") {
+            return;
+          }
+        }
+      }
+      try {
+        await navigator.clipboard.writeText(inviteLink);
+        button.textContent = "Link copied";
+      } catch (error) {
+        button.textContent = inviteLink;
+      }
+      setTimeout(() => {
+        button.textContent = "Share invite link";
+      }, 2000);
+    });
     document.getElementById("rematch").addEventListener("click", () => {
       send({ type: "rematch" });
     });
@@ -838,6 +880,11 @@ PAGE = """<!DOCTYPE html>
 
     watchTyping(nameEl);
     watchTyping(codeEl);
+
+    const linkCode = new URLSearchParams(location.search).get("code");
+    if (linkCode) {
+      codeEl.value = linkCode.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+    }
 
     function onMotion(event) {
       if (!shaking || !playing || document.visibilityState === "hidden") {
@@ -1003,14 +1050,17 @@ PAGE = """<!DOCTYPE html>
 """
 
 
-def create_app() -> web.Application:
+def create_app(public_url: str | None = None) -> web.Application:
+    """public_url is the address phones use, such as the ngrok link, for invites."""
     app = web.Application()
+    app["public_url"] = public_url.rstrip("/") if public_url else None
     app["book"] = LobbyBook()
     app["sockets"] = {}
     app["bridge"] = Bridge()
     app.on_cleanup.append(close_bridge)
     app.router.add_get("/", index)
     app.router.add_get("/robot.svg", robot_image)
+    app.router.add_get("/qr.svg", qr_image)
     app.router.add_get("/ws", websocket)
     return app
 
@@ -1025,6 +1075,16 @@ async def index(_request: web.Request) -> web.Response:
 
 async def robot_image(_request: web.Request) -> web.FileResponse:
     return web.FileResponse(ROBOT_IMAGE)
+
+
+async def qr_image(request: web.Request) -> web.Response:
+    """A QR code for an invite link, so phones can join by pointing a camera at it."""
+    data = request.query.get("data", "")
+    if not data.startswith(("http://", "https://")) or len(data) > QR_MAX_LENGTH:
+        raise web.HTTPBadRequest(text="Send an http or https link of at most 200 characters.")
+    buffer = io.BytesIO()
+    segno.make(data, error="m").save(buffer, kind="svg", scale=4, border=2, dark="#111", light="#fff")
+    return web.Response(body=buffer.getvalue(), content_type="image/svg+xml", headers={"Cache-Control": "max-age=3600"})
 
 
 async def websocket(request: web.Request) -> web.WebSocketResponse:
@@ -1175,7 +1235,9 @@ async def broadcast(app: web.Application, code: str) -> None:
         if destination is None or destination.closed:
             continue
         try:
-            await destination.send_str(json.dumps(book.snapshot(code, player_id)))
+            snapshot = book.snapshot(code, player_id)
+            snapshot["public_url"] = app["public_url"]
+            await destination.send_str(json.dumps(snapshot))
         except ClientConnectionError:
             continue
 
