@@ -822,7 +822,11 @@ PAGE = """<!DOCTYPE html>
       const enduranceMode = message.mode === "endurance";
       modeLabel.hidden = choosing || (message.started && enduranceMode);
       modeLabel.textContent = bomba
-        ? (message.started ? "Bomba · Round " + bomba.round + " · " + bomba.alive + " left" : "Bomba")
+        ? (!message.started
+          ? "Bomba"
+          : message.finished
+            ? "Bomba · Game over in round " + bomba.round
+            : "Bomba · Round " + bomba.round + " · " + bomba.alive + " left")
         : enduranceMode ? "Endurance" : "Chase";
       const modeHelp = document.getElementById("mode-help");
       modeHelp.hidden = message.started;
@@ -1023,19 +1027,7 @@ PAGE = """<!DOCTYPE html>
     function resultFor(message, mine) {
       const winners = message.winners || [];
       if (message.bomba) {
-        const lastOut = message.bomba.out || [];
-        if (winners.length === 0) {
-          return {
-            headline: "Nobody survived",
-            detail: lastOut.length > 1 ? lastOut.join(" & ") + " tied for closest, so all are out" : "",
-            won: false,
-          };
-        }
-        const knockedOut = lastOut.length > 0 ? "💥 " + lastOut.join(" & ") + " went out last. " : "";
-        if (mine && winners.includes(mine.name)) {
-          return { headline: "You survived!", detail: knockedOut + "Last one standing", won: true };
-        }
-        return { headline: winners[0] + " survived", detail: knockedOut + "Last one standing", won: false };
+        return bombaResult(message.bomba, winners, mine);
       }
       let detail = "";
       if (message.reason === "arrival") {
@@ -1059,6 +1051,50 @@ PAGE = """<!DOCTYPE html>
       }
       const headline = winners.length === 1 ? winners[0] + " won" : "Tie: " + winners.join(" & ");
       return { headline, detail, won: false };
+    }
+
+    // The match-over card for Bomba. The last knockout is told to whoever it hit,
+    // and the survivor is named in its own sentence so the two never read as one.
+    function bombaResult(bomba, winners, mine) {
+      const lastOut = bomba.out || [];
+      const youOut = Boolean(mine) && lastOut.includes(mine.name);
+      const how = lastOutText(lastOut, bomba.out_reason, youOut ? mine.name : null);
+      if (winners.length === 0) {
+        return {
+          headline: youOut ? "💥 You're out! Nobody survived" : "Nobody survived",
+          detail: how ? how + ", so nobody is left" : "",
+          won: false,
+        };
+      }
+      const survivor = winners.join(" & ");
+      if (mine && winners.includes(mine.name)) {
+        return { headline: "You survived!", detail: (how ? "💥 " + how + ". " : "") + "You're the last one standing.", won: true };
+      }
+      if (youOut) {
+        return { headline: "💥 You're out!", detail: how + ". " + survivor + " is the last one standing.", won: false };
+      }
+      return {
+        headline: survivor + " survived",
+        detail: (how ? "💥 " + how + ". " : "") + survivor + " is the last one standing.",
+        won: false,
+      };
+    }
+
+    // How the last knockout happened. you is the viewer's name when it hit them.
+    function lastOutText(names, reason, you) {
+      if (names.length === 0) {
+        return "";
+      }
+      const others = names.filter((name) => name !== you);
+      if (reason === "arrival") {
+        return you ? "The robot reached you" : "The robot reached " + names.join(" & ");
+      }
+      if (names.length > 1) {
+        return you
+          ? "You tied with " + others.join(" & ") + " for closest when time ran out"
+          : names.join(" & ") + " tied for closest when time ran out";
+      }
+      return you ? "You were closest when time ran out" : names[0] + " was closest when time ran out";
     }
 
     function playerRow(player, started, topPull) {
