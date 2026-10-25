@@ -494,7 +494,11 @@ PAGE = """<!DOCTYPE html>
       document.getElementById("leave").hidden = playing;
       const mine = message.players.find((player) => player.you);
       document.getElementById("your-seat").textContent = mine ? "You are seat " + mine.seat : "";
-      document.getElementById("your-mark").textContent = mine ? "Stand on mark " + mine.seat : "";
+      document.getElementById("your-mark").textContent = !mine
+        ? ""
+        : message.last_match
+          ? "Your mark appears when the game starts"
+          : "Stand on mark " + mine.seat;
       const chase = document.getElementById("chase");
       if (ready) {
         chase.hidden = false;
