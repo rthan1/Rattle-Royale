@@ -205,6 +205,7 @@ PAGE = """<!DOCTYPE html>
       lobbyEl.hidden = true;
       joinEl.hidden = !shaking;
       keepAwake(false);
+      refreshChrome();
     }
 
     let showingReady = false;
@@ -248,6 +249,16 @@ PAGE = """<!DOCTYPE html>
       } finally {
         wakePending = false;
       }
+    }
+
+    function refreshChrome() {
+      statusEl.hidden = inLobby && statusEl.textContent === "Connected";
+      shakeNoteEl.hidden = inLobby && shaking;
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+      refreshChrome();
     }
 
     function runCountdown() {
@@ -550,6 +561,7 @@ PAGE = """<!DOCTYPE html>
       caption.textContent = captionText;
       caption.hidden = document.getElementById("arena").hidden || !captionText;
       keepAwake(message.started && !message.finished);
+      refreshChrome();
     }
 
     let celebrated = null;
@@ -859,7 +871,7 @@ PAGE = """<!DOCTYPE html>
     });
 
     function scheduleReconnect() {
-      statusEl.textContent = "Reconnecting";
+      setStatus("Reconnecting");
       if (retryTimer !== null) {
         return;
       }
@@ -870,7 +882,7 @@ PAGE = """<!DOCTYPE html>
     }
 
     function connect() {
-      statusEl.textContent = "Connecting";
+      setStatus("Connecting");
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const next = new WebSocket(protocol + "//" + location.host + "/ws");
       socket = next;
@@ -886,7 +898,7 @@ PAGE = """<!DOCTYPE html>
           return;
         }
         if (message.type === "hello") {
-          statusEl.textContent = "Connected";
+          setStatus("Connected");
         } else if (message.type === "lobby") {
           showLobby(message);
         } else if (message.type === "rematched") {
@@ -913,7 +925,7 @@ PAGE = """<!DOCTYPE html>
 
       next.addEventListener("error", () => {
         if (next === socket) {
-          statusEl.textContent = "Reconnecting";
+          setStatus("Reconnecting");
         }
       });
     }
