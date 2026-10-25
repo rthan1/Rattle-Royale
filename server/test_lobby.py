@@ -1,9 +1,9 @@
 """Seat assignment for a lobby."""
 
-import time
 import unittest
 
 from server.lobby import MAX_PLAYERS, LobbyBook, LobbyError
+from server.test_pull import wake
 
 
 def seats(book: LobbyBook, code: str, viewer_id: str) -> dict[str, dict]:
@@ -126,10 +126,7 @@ class RematchTests(unittest.TestCase):
         book, ada, bea, _ = self.finished_lobby()
         code = book.rematch(ada)
         book.start(ada)
-        lobby = book._lobbies[code]
-        now = time.time()
-        lobby.opens_at = now - 1
-        lobby.pull_at = now
+        wake(book, code)
         book.record_shakes(bea, 3)
         self.assertEqual(seats(book, code, bea)["Bea"]["shakes"], 3)
 
