@@ -3,6 +3,7 @@
 import unittest
 
 from server.lobby import MAX_PLAYERS, LobbyBook, LobbyError
+from server.planner import mark_at
 from server.test_pull import wake
 
 
@@ -144,7 +145,7 @@ class RematchTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         snapshot = book.snapshot(code, ada)
-        self.assertEqual(snapshot["marks"], [{"seat": 0, "angle": 0, "you": True, "chased": False}])
+        self.assertEqual(snapshot["marks"], [{"seat": 0, "name": "Ada", "angle": 0, "you": True, "chased": False}])
         self.assertEqual(snapshot["pose"], {"x": 0.0, "y": 0.0, "heading": 0.0, "known": True})
 
     def test_rematch_keeps_the_result_map_until_the_next_start(self) -> None:
@@ -172,6 +173,54 @@ class RematchTests(unittest.TestCase):
         self.assertEqual(started["pose"], {"x": 0.0, "y": 0.0, "heading": 0.0, "known": True})
         self.assertEqual([mark["angle"] for mark in started["marks"]], [0, 120, 240])
         self.assertTrue(all(mark["chased"] is False for mark in started["marks"]))
+
+    def test_map_marks_carry_names_and_the_result_map_keeps_them_after_a_leave(self) -> None:
+        book, ada, bea, code = self.finished_lobby()
+        self.assertEqual([mark["name"] for mark in book.snapshot(code, ada)["marks"]], ["Ada", "Bea"])
+        code = book.rematch(ada)
+        book.leave(bea)
+        book.join(code, "Cam")
+        held = book.snapshot(code, ada)
+        self.assertEqual([mark["name"] for mark in held["marks"]], ["Ada", "Bea"])
+        self.assertEqual([player["name"] for player in held["players"]], ["Ada", "Cam"])
+        book.start(ada)
+        self.assertEqual([mark["name"] for mark in book.snapshot(code, ada)["marks"]], ["Ada", "Cam"])
+
+    def test_the_held_map_is_flagged_as_the_last_match_with_its_winner(self) -> None:
+        book, ada, bea, code = self.finished_lobby()
+        self.assertIsNone(book.snapshot(code, ada)["last_match"])
+        book._lobbies[code].winner_ids = [bea]
+        code = book.rematch(ada)
+        self.assertEqual(book.snapshot(code, ada)["last_match"], {"winners": ["Bea"]})
+        book.leave(bea)
+        self.assertEqual(book.snapshot(code, ada)["last_match"], {"winners": ["Bea"]})
+        book.start(ada)
+        self.assertIsNone(book.snapshot(code, ada)["last_match"])
+
+    def test_a_drawn_last_match_has_no_winners(self) -> None:
+        book, ada, _, code = self.finished_lobby()
+        book._lobbies[code].winner_ids = []
+        code = book.rematch(ada)
+        self.assertEqual(book.snapshot(code, ada)["last_match"], {"winners": []})
+
+
+class LeaderTests(unittest.TestCase):
+    def test_leaders_are_the_players_closest_to_the_robot_during_play(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        book.join(code, "Bea")
+        book.join(code, "Cam")
+        self.assertEqual(book.snapshot(code, ada)["leaders"], [])
+        book.start(ada)
+        self.assertEqual(book.snapshot(code, ada)["leaders"], ["Ada", "Bea", "Cam"])
+        lobby = book._lobbies[code]
+        lobby.pose_x, lobby.pose_y = mark_at(120)
+        self.assertEqual(book.snapshot(code, ada)["leaders"], ["Bea"])
+        lobby.pose_x, lobby.pose_y = mark_at(60)
+        self.assertEqual(book.snapshot(code, ada)["leaders"], ["Ada", "Bea"])
+        lobby.ends_at = 0
+        self.assertTrue(book.finish_if_due(code))
+        self.assertEqual(book.snapshot(code, ada)["leaders"], [])
 
 
 if __name__ == "__main__":
