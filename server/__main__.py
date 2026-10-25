@@ -50,7 +50,7 @@ def main() -> None:
         log.info("On your phone:  %s", public)
     else:
         log.info("On your phone:  put the ngrok url in ngrok.yml")
-    app = create_app()
+    app = create_app(public)
     port_name = os.environ.get("RATTLE_PORT", "").strip()
     if port_name:
         app["bridge"].open_port(port_name)

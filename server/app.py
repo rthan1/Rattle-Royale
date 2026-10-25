@@ -10,11 +10,13 @@ Reaching a mark wins. If time runs out, the closest player wins.
 """
 
 import asyncio
+import io
 import json
 import logging
 import time
 from pathlib import Path
 
+import segno
 from aiohttp import ClientConnectionError, WSMsgType, web
 
 from server.bridge import Bridge
@@ -23,7 +25,8 @@ from server.lobby import PULL_TICK_SECONDS, LobbyBook, LobbyError
 
 HOST = "0.0.0.0"
 PORT = 8080
-ROBOT_IMAGE = Path(__file__).resolve().parent / "static" / "robot.png"
+ROBOT_IMAGE = Path(__file__).resolve().parent / "static" / "robot.svg"
+QR_MAX_LENGTH = 200
 
 log = logging.getLogger(__name__)
 
@@ -59,10 +62,23 @@ PAGE = """<!DOCTYPE html>
       width: 100%;
       margin: 0 0 0.9rem;
       padding: 0.85rem;
+      border: none;
+      border-radius: 0.6rem;
+      background: #2c2c2c;
+      color: #f4f4f4;
       touch-action: manipulation;
+      cursor: pointer;
     }
-    #clock { font-size: 2.5rem; margin: 0 0 0.5rem; }
-    #result { font-size: 2rem; margin: 0 0 1rem; }
+    button:active { transform: scale(0.98); }
+    button.primary { background: #ffc14d; color: #111; font-weight: bold; }
+    button.quiet { background: transparent; color: #bbb; border: 1px solid #444; font-size: 1rem; padding: 0.65rem; }
+    #clock { font-size: 3.5rem; font-weight: bold; margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
+    #clock.ready { color: #ffc14d; font-size: 6rem; line-height: 1.1; }
+    #clock.go { color: #7be495; font-size: 5rem; line-height: 1.1; }
+    #clock.low { color: #ff7a7a; }
+    #result { font-size: 2.4rem; font-weight: bold; margin: 0 0 0.25rem; }
+    #result.won { color: #7be495; }
+    #result-detail { margin: 0 0 1rem; color: #aaa; }
     #error { min-height: 1.2rem; margin: 0; color: #ffb4b4; text-align: center; }
     #waiting { margin: 0 0 0.9rem; color: #aaa; }
     #lobby { text-align: center; }
@@ -85,9 +101,50 @@ PAGE = """<!DOCTYPE html>
       background: #1c1c1c;
       border-radius: 0.5rem;
     }
-    #players { list-style: none; padding: 0; margin: 0 0 1.25rem; font-size: 1.35rem; }
-    #players li { padding: 0.35rem 0; }
+    #players { list-style: none; padding: 0; margin: 0 0 1.25rem; font-size: 1.15rem; text-align: left; }
+    #players li {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.45rem 0.6rem;
+      margin: 0 0 0.35rem;
+      border-radius: 0.5rem;
+      background: #1c1c1c;
+      border-left: 4px solid transparent;
+    }
+    #players li.you { background: #1d2733; }
+    #players li.target { border-left-color: #e24b4b; }
+    #players .seat {
+      flex: none;
+      width: 1.6rem;
+      height: 1.6rem;
+      line-height: 1.6rem;
+      border-radius: 50%;
+      background: #dedede;
+      color: #111;
+      font-size: 0.85rem;
+      font-weight: bold;
+      text-align: center;
+    }
+    #players li.target .seat { background: #e24b4b; }
+    #players .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #players .tag { flex: none; font-size: 0.75rem; color: #ff9a9a; text-transform: uppercase; letter-spacing: 0.05rem; }
+    #players .bar { flex: none; width: 4.5rem; height: 0.5rem; border-radius: 0.25rem; background: #333; overflow: hidden; }
+    #players .bar span { display: block; height: 100%; background: #ffc14d; }
+    #players .num { flex: none; min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; color: #ccc; }
     #shakes { font-size: 1.6rem; margin: 0 0 0.4rem; text-align: center; }
+    #shakes.pulse { animation: shake-pulse 0.25s ease-out; }
+    @keyframes shake-pulse {
+      from { transform: scale(1.25); color: #ffc14d; }
+      to { transform: scale(1); color: inherit; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #shakes.pulse { animation: none; }
+    }
+    #invite { margin: 0 0 1rem; }
+    #invite-qr { display: block; width: 9.25rem; height: 9.25rem; margin: 0 auto 0.6rem; border-radius: 0.4rem; background: #fff; }
+    #host-tip { margin: 0 0 0.75rem; color: #ccc; font-size: 0.95rem; }
+    #host-tip.offline { color: #ff9a9a; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
     #modes { display: flex; gap: 0.5rem; margin: 0 0 0.9rem; }
     #modes button { flex: 1; width: auto; margin: 0; }
@@ -103,20 +160,27 @@ PAGE = """<!DOCTYPE html>
   <main>
     <p id="status">Connecting</p>
     <p id="shakes" hidden>Shakes: 0</p>
-    <button id="enable-shake" type="button">Enable shaking</button>
+    <button id="enable-shake" type="button" class="primary">Enable shaking</button>
     <p id="shake-note">Enable shaking to create or join a lobby.</p>
     <section id="join" hidden>
       <label for="name">Name</label>
       <input id="name" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
-      <button id="create" type="button">Create lobby</button>
+      <button id="create" type="button" class="primary">Create lobby</button>
       <label for="code">Lobby code</label>
       <input id="code" maxlength="4" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go">
-      <button id="join-lobby" type="button">Join lobby</button>
+      <button id="join-lobby" type="button" class="primary">Join lobby</button>
     </section>
     <section id="lobby" hidden>
       <p id="notice" hidden></p>
+      <p id="clock" hidden></p>
+      <p id="result" hidden></p>
+      <p id="result-detail" hidden></p>
       <p id="lobby-code"></p>
       <p id="lobby-count"></p>
+      <div id="invite" hidden>
+        <img id="invite-qr" alt="QR code to join this lobby">
+        <button id="share" type="button" class="quiet">Share invite link</button>
+      </div>
       <p id="your-seat"></p>
       <p id="your-mark"></p>
       <div id="modes" hidden>
@@ -132,12 +196,11 @@ PAGE = """<!DOCTYPE html>
       <p id="arena-caption" hidden></p>
       <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
-      <p id="clock" hidden></p>
-      <p id="result" hidden></p>
-      <button id="start" type="button" hidden>Start game</button>
-      <button id="rematch" type="button" hidden>Rematch</button>
+      <p id="host-tip" hidden></p>
+      <button id="start" type="button" class="primary" hidden>Start game</button>
+      <button id="rematch" type="button" class="primary" hidden>Rematch</button>
       <p id="waiting" hidden>Waiting for the creator to start</p>
-      <button id="leave" type="button">Leave lobby</button>
+      <button id="leave" type="button" class="quiet">Leave lobby</button>
     </section>
     <p id="error"></p>
   </main>
@@ -157,6 +220,38 @@ PAGE = """<!DOCTYPE html>
     let roundEndsAt = null;
     let countdownTimer = null;
     let lobbyMessage = null;
+    let audio = null;
+
+    function unlockAudio() {
+      try {
+        const Context = window.AudioContext || window.webkitAudioContext;
+        if (!audio && Context) {
+          audio = new Context();
+        }
+        if (audio && audio.state === "suspended") {
+          audio.resume();
+        }
+      } catch (error) {
+        audio = null;
+      }
+    }
+
+    function beep(frequency, ms, volume = 0.15) {
+      if (!audio || audio.state !== "running") {
+        return;
+      }
+      const start = audio.currentTime;
+      const tone = audio.createOscillator();
+      const gain = audio.createGain();
+      tone.frequency.value = frequency;
+      gain.gain.setValueAtTime(volume, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + ms / 1000);
+      tone.connect(gain).connect(audio.destination);
+      tone.start(start);
+      tone.stop(start + ms / 1000);
+    }
+
+    ["touchend", "click"].forEach((kind) => document.addEventListener(kind, unlockAudio, { passive: true }));
 
     function stopCountdown() {
       if (countdownTimer !== null) {
@@ -188,41 +283,110 @@ PAGE = """<!DOCTYPE html>
       shakesEl.hidden = true;
       lobbyEl.hidden = true;
       joinEl.hidden = !shaking;
-    }
-
-    function winnerText(message) {
-      const winners = message.winners || [];
-      if (message.reason === "draw" || winners.length === 0) {
-        return "Draw";
-      }
-      let text = winners.length === 1 ? winners[0] + " wins" : "Tie: " + winners.join(", ");
-      if (message.reason === "arrival") {
-        text += " — the robot got there";
-      } else if (message.reason === "clock") {
-        text += " — closest when time ran out";
-      }
-      return text;
+      keepAwake(false);
+      refreshChrome();
     }
 
     let showingReady = false;
+    const LOW_TIME_SECONDS = 10;
+
+    let wakeLock = null;
+    let wakeWanted = false;
+    let wakePending = false;
+
+    async function keepAwake(on) {
+      wakeWanted = on;
+      if (!on) {
+        const lock = wakeLock;
+        wakeLock = null;
+        if (lock) {
+          try {
+            await lock.release();
+          } catch (error) {
+            return;
+          }
+        }
+        return;
+      }
+      if (wakeLock || wakePending || !("wakeLock" in navigator) || document.visibilityState !== "visible") {
+        return;
+      }
+      wakePending = true;
+      try {
+        const lock = await navigator.wakeLock.request("screen");
+        lock.addEventListener("release", () => {
+          if (wakeLock === lock) {
+            wakeLock = null;
+          }
+        });
+        wakeLock = lock;
+        if (!wakeWanted) {
+          keepAwake(false);
+        }
+      } catch (error) {
+        wakeLock = null;
+      } finally {
+        wakePending = false;
+      }
+    }
+
+    function refreshChrome() {
+      statusEl.hidden = inLobby && statusEl.textContent === "Connected";
+      shakeNoteEl.hidden = inLobby && shaking;
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+      refreshChrome();
+    }
+
+    const GO_MS = 900;
+    let lastCue = null;
+    let goUntil = null;
 
     function runCountdown() {
       stopCountdown();
+      lastCue = null;
+      goUntil = null;
       const clock = document.getElementById("clock");
       function tick() {
         const now = Date.now();
         const ready = roundOpensAt !== null && now < roundOpensAt;
+        clock.classList.toggle("ready", ready);
         if (ready) {
           showingReady = true;
-          clock.textContent = String(Math.max(1, Math.ceil((roundOpensAt - now) / 1000)));
+          clock.classList.remove("low");
+          const count = Math.max(1, Math.ceil((roundOpensAt - now) / 1000));
+          if (count !== lastCue) {
+            lastCue = count;
+            beep(660, 140);
+          }
+          clock.textContent = String(count);
           return;
         }
         if (showingReady && lobbyMessage) {
           showingReady = false;
+          lastCue = null;
+          goUntil = now + GO_MS;
+          beep(990, 450);
+          clock.classList.add("go");
+          clock.textContent = "GO!";
           showLobby(lobbyMessage);
           return;
         }
+        if (goUntil !== null && now < goUntil) {
+          clock.classList.add("go");
+          clock.classList.remove("low");
+          clock.textContent = "GO!";
+          return;
+        }
+        clock.classList.remove("go");
         const left = roundEndsAt === null ? 0 : Math.max(0, Math.ceil((roundEndsAt - now) / 1000));
+        if (left > 0 && left <= 3 && left !== lastCue) {
+          lastCue = left;
+          beep(520, 90, 0.1);
+        }
+        clock.classList.toggle("low", left <= LOW_TIME_SECONDS);
         clock.textContent = left + "s";
         if (left <= 0) {
           stopCountdown();
@@ -243,6 +407,7 @@ PAGE = """<!DOCTYPE html>
     let robotPoseAt = null;
     let robotGap = GLIDE_DEFAULT_MS;
     let robotFrame = null;
+    const ARENA_SIZE = 320;
     const ROBOT_SIZE = 44;
     const NAME_INSET = 38;
     const NAME_MAX = 10;
@@ -252,7 +417,24 @@ PAGE = """<!DOCTYPE html>
         paintArena(arenaMessage, robotShown);
       }
     });
-    robotImage.src = "/robot.png";
+    robotImage.src = "/robot.svg";
+
+    let pulseFrame = null;
+
+    function wantsPulse(message) {
+      return !reduceMotion && message.started && !message.finished && (message.marks || []).some((mark) => mark.chased);
+    }
+
+    function stepPulse() {
+      pulseFrame = null;
+      if (arenaMessage === null || robotShown === null || !wantsPulse(arenaMessage)) {
+        return;
+      }
+      if (robotGlide === null) {
+        paintArena(arenaMessage, robotShown);
+      }
+      pulseFrame = requestAnimationFrame(stepPulse);
+    }
 
     function samePlace(a, b) {
       return a.x === b.x && a.y === b.y && a.heading === b.heading;
@@ -295,6 +477,10 @@ PAGE = """<!DOCTYPE html>
       if (!message.pose || marks.length === 0) {
         canvas.hidden = true;
         stopGlide();
+        if (pulseFrame !== null) {
+          cancelAnimationFrame(pulseFrame);
+          pulseFrame = null;
+        }
         arenaMessage = null;
         robotShown = null;
         robotRound = null;
@@ -326,12 +512,21 @@ PAGE = """<!DOCTYPE html>
         robotShown.known = target.known;
       }
       paintArena(message, robotShown);
+      if (pulseFrame === null && wantsPulse(message)) {
+        pulseFrame = requestAnimationFrame(stepPulse);
+      }
     }
 
     function paintArena(message, pose) {
       const canvas = document.getElementById("arena");
       const ctx = canvas.getContext("2d");
-      const size = canvas.width;
+      const size = ARENA_SIZE;
+      const pixels = Math.round(size * Math.min(window.devicePixelRatio || 1, 3));
+      if (canvas.width !== pixels) {
+        canvas.width = pixels;
+        canvas.height = pixels;
+      }
+      ctx.setTransform(pixels / size, 0, 0, pixels / size, 0, 0);
       ctx.clearRect(0, 0, size, size);
       const radius = message.mark_radius || 152.4;
       const pad = 36;
@@ -350,6 +545,30 @@ PAGE = """<!DOCTYPE html>
       ctx.strokeStyle = "#2a2a2a";
       ctx.stroke();
       const marks = message.marks || [];
+      const live = message.started && !message.finished;
+      const target = live ? marks.find((mark) => mark.chased && mark.angle != null) : null;
+      if (target) {
+        const aim = target.angle * Math.PI / 180;
+        const spot = point(radius * Math.cos(aim), radius * Math.sin(aim));
+        const from = point(pose.x, pose.y);
+        const wave = reduceMotion ? 0.5 : (Math.sin(performance.now() / 250) + 1) / 2;
+        ctx.save();
+        ctx.strokeStyle = "#e24b4b";
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.7;
+        ctx.setLineDash([6, 6]);
+        ctx.beginPath();
+        ctx.moveTo(from[0], from[1]);
+        ctx.lineTo(spot[0], spot[1]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = 0.25 + 0.5 * (1 - wave);
+        ctx.beginPath();
+        ctx.arc(spot[0], spot[1], 16 + 5 * wave, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
       marks.forEach((mark) => {
         if (mark.angle == null) {
           return;
@@ -447,6 +666,23 @@ PAGE = """<!DOCTYPE html>
       }
       document.getElementById("start").hidden = !(message.creator && !message.started);
       document.getElementById("rematch").hidden = !(message.creator && message.finished);
+      const invite = document.getElementById("invite");
+      invite.hidden = message.started || message.players.length >= message.max;
+      if (!invite.hidden) {
+        inviteLink = (message.public_url || location.origin) + "/?code=" + encodeURIComponent(message.code);
+        const qr = document.getElementById("invite-qr");
+        const source = "/qr.svg?data=" + encodeURIComponent(inviteLink);
+        if (qr.getAttribute("src") !== source) {
+          qr.setAttribute("src", source);
+        }
+      }
+      const tip = document.getElementById("host-tip");
+      const robotOffline = message.robot_online === false;
+      tip.hidden = !message.creator || message.started;
+      tip.classList.toggle("offline", robotOffline);
+      tip.textContent = robotOffline
+        ? "Robot offline. The round will run, but the robot won't move."
+        : "Robot ready. Put it on the center mark, facing seat 0, then start.";
       const waiting = document.getElementById("waiting");
       waiting.hidden = message.creator || (message.started && !message.finished);
       waiting.textContent = message.finished
@@ -454,7 +690,11 @@ PAGE = """<!DOCTYPE html>
         : "Waiting for the creator to start";
       document.getElementById("leave").hidden = playing;
       document.getElementById("your-seat").textContent = mine ? "You are seat " + mine.seat : "";
-      document.getElementById("your-mark").textContent = mine ? "Stand on mark " + mine.seat : "";
+      document.getElementById("your-mark").textContent = !mine
+        ? ""
+        : message.last_match
+          ? "Your mark appears when the game starts"
+          : "Stand on mark " + mine.seat;
       const chase = document.getElementById("chase");
       if (ready) {
         chase.hidden = false;
@@ -473,12 +713,17 @@ PAGE = """<!DOCTYPE html>
         chase.hidden = true;
         chase.textContent = "";
       }
+      if (message.started && !message.finished && !ready && message.robot_online === false) {
+        chase.textContent = "Robot offline, so it isn't moving";
+      }
       const clock = document.getElementById("clock");
       const result = document.getElementById("result");
+      const resultDetail = document.getElementById("result-detail");
       if (playing) {
         clock.hidden = false;
         result.hidden = true;
         result.textContent = "";
+        resultDetail.hidden = true;
         if (countdownTimer === null || previousOpen !== roundOpensAt || previousEnd !== roundEndsAt) {
           runCountdown();
         }
@@ -489,34 +734,100 @@ PAGE = """<!DOCTYPE html>
         }
         stopCountdown();
         clock.hidden = true;
+        const outcome = resultFor(message, mine);
         result.hidden = false;
-        result.textContent = winnerText(message);
+        result.textContent = outcome.headline;
+        result.classList.toggle("won", outcome.won);
+        resultDetail.hidden = !outcome.detail;
+        resultDetail.textContent = outcome.detail;
+        const finishKey = message.code + ":" + message.ends_at;
+        if (celebrated !== finishKey) {
+          beep(outcome.won ? 880 : 300, 500);
+          if (outcome.won && navigator.vibrate) {
+            navigator.vibrate([120, 60, 240]);
+          }
+        }
+        celebrated = finishKey;
       } else {
         stopCountdown();
         clock.hidden = true;
         result.hidden = true;
         result.textContent = "";
+        resultDetail.hidden = true;
       }
       const list = document.getElementById("players");
       list.replaceChildren();
+      const topPull = Math.max(1, ...message.players.map((player) => Number(player.pull) || 0));
       message.players.forEach((player) => {
-        const item = document.createElement("li");
-        const marker = player.you ? " (you)" : "";
-        let text = player.name + " — seat " + player.seat + marker;
-        if (message.started) {
-          text += " — " + player.shakes + " — pull " + Number(player.pull).toFixed(2);
-          if (player.chased) {
-            text += " — chased";
-          }
-        }
-        item.textContent = text;
-        list.append(item);
+        list.append(playerRow(player, message.started, topPull));
       });
       drawArena(message);
       const caption = document.getElementById("arena-caption");
       const captionText = arenaCaption(message, ready);
       caption.textContent = captionText;
       caption.hidden = document.getElementById("arena").hidden || !captionText;
+      keepAwake(message.started && !message.finished);
+      refreshChrome();
+    }
+
+    let celebrated = null;
+
+    function resultFor(message, mine) {
+      const winners = message.winners || [];
+      let detail = "";
+      if (message.reason === "arrival") {
+        detail = "The robot reached them";
+      } else if (message.reason === "clock") {
+        detail = winners.length > 1 ? "Tied for closest when time ran out" : "Closest when time ran out";
+      }
+      if (message.reason === "draw" || winners.length === 0) {
+        return { headline: "Draw", detail: "", won: false };
+      }
+      const youWon = Boolean(mine) && winners.includes(mine.name);
+      if (youWon) {
+        if (message.reason === "arrival") {
+          detail = "The robot reached you";
+        }
+        const others = winners.filter((name) => name !== mine.name);
+        if (others.length > 0) {
+          detail = "With " + others.join(" & ") + ", closest when time ran out";
+        }
+        return { headline: others.length > 0 ? "You tied!" : "You won!", detail, won: true };
+      }
+      const headline = winners.length === 1 ? winners[0] + " won" : "Tie: " + winners.join(" & ");
+      return { headline, detail, won: false };
+    }
+
+    function playerRow(player, started, topPull) {
+      const item = document.createElement("li");
+      item.classList.toggle("you", player.you);
+      item.classList.toggle("target", started && player.chased);
+      const seat = document.createElement("span");
+      seat.className = "seat";
+      seat.textContent = String(player.seat);
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = player.you ? player.name + " (you)" : player.name;
+      item.append(seat, who);
+      if (!started) {
+        return item;
+      }
+      if (player.chased) {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = "target";
+        item.append(tag);
+      }
+      const bar = document.createElement("span");
+      bar.className = "bar";
+      const fill = document.createElement("span");
+      fill.style.width = Math.round(100 * Math.min(1, (Number(player.pull) || 0) / topPull)) + "%";
+      bar.append(fill);
+      const shakes = document.createElement("span");
+      shakes.className = "num";
+      shakes.textContent = String(player.shakes);
+      item.append(bar, shakes);
+      return item;
     }
 
     function arenaCaption(message, ready) {
@@ -565,6 +876,29 @@ PAGE = """<!DOCTYPE html>
     });
     document.getElementById("mode-endurance").addEventListener("click", () => {
       send({ type: "mode", mode: "endurance" });
+    });
+    let inviteLink = "";
+    document.getElementById("share").addEventListener("click", async () => {
+      const button = document.getElementById("share");
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: "Join my Rattle Royale lobby", url: inviteLink });
+          return;
+        } catch (error) {
+          if (error && error.name === "AbortError") {
+            return;
+          }
+        }
+      }
+      try {
+        await navigator.clipboard.writeText(inviteLink);
+        button.textContent = "Link copied";
+      } catch (error) {
+        button.textContent = inviteLink;
+      }
+      setTimeout(() => {
+        button.textContent = "Share invite link";
+      }, 2000);
     });
     document.getElementById("rematch").addEventListener("click", () => {
       send({ type: "rematch" });
@@ -741,6 +1075,11 @@ PAGE = """<!DOCTYPE html>
     watchTyping(nameEl);
     watchTyping(codeEl);
 
+    const linkCode = new URLSearchParams(location.search).get("code");
+    if (linkCode) {
+      codeEl.value = linkCode.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+    }
+
     function onMotion(event) {
       if (!shaking || !playing || document.visibilityState === "hidden") {
         return;
@@ -776,6 +1115,12 @@ PAGE = """<!DOCTYPE html>
         spendEndurance();
       }
       showShakeCount();
+      shakesEl.classList.remove("pulse");
+      void shakesEl.offsetWidth;
+      shakesEl.classList.add("pulse");
+      if (navigator.vibrate) {
+        navigator.vibrate(15);
+      }
       send({ type: "shakes", total: shakeCount });
     }
 
@@ -823,6 +1168,8 @@ PAGE = """<!DOCTYPE html>
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
         lastShakeAt = 0;
+      } else if (wakeWanted) {
+        keepAwake(true);
       }
     });
     nameEl.addEventListener("keydown", (event) => {
@@ -837,7 +1184,7 @@ PAGE = """<!DOCTYPE html>
     });
 
     function scheduleReconnect() {
-      statusEl.textContent = "Reconnecting";
+      setStatus("Reconnecting");
       if (retryTimer !== null) {
         return;
       }
@@ -848,7 +1195,7 @@ PAGE = """<!DOCTYPE html>
     }
 
     function connect() {
-      statusEl.textContent = "Connecting";
+      setStatus("Connecting");
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       const next = new WebSocket(protocol + "//" + location.host + "/ws");
       socket = next;
@@ -864,7 +1211,7 @@ PAGE = """<!DOCTYPE html>
           return;
         }
         if (message.type === "hello") {
-          statusEl.textContent = "Connected";
+          setStatus("Connected");
         } else if (message.type === "lobby") {
           showLobby(message);
         } else if (message.type === "rematched") {
@@ -891,7 +1238,7 @@ PAGE = """<!DOCTYPE html>
 
       next.addEventListener("error", () => {
         if (next === socket) {
-          statusEl.textContent = "Reconnecting";
+          setStatus("Reconnecting");
         }
       });
     }
@@ -903,14 +1250,17 @@ PAGE = """<!DOCTYPE html>
 """
 
 
-def create_app() -> web.Application:
+def create_app(public_url: str | None = None) -> web.Application:
+    """public_url is the address phones use, such as the ngrok link, for invites."""
     app = web.Application()
+    app["public_url"] = public_url.rstrip("/") if public_url else None
     app["book"] = LobbyBook()
     app["sockets"] = {}
     app["bridge"] = Bridge()
     app.on_cleanup.append(close_bridge)
     app.router.add_get("/", index)
-    app.router.add_get("/robot.png", robot_image)
+    app.router.add_get("/robot.svg", robot_image)
+    app.router.add_get("/qr.svg", qr_image)
     app.router.add_get("/ws", websocket)
     return app
 
@@ -925,6 +1275,16 @@ async def index(_request: web.Request) -> web.Response:
 
 async def robot_image(_request: web.Request) -> web.FileResponse:
     return web.FileResponse(ROBOT_IMAGE)
+
+
+async def qr_image(request: web.Request) -> web.Response:
+    """A QR code for an invite link, so phones can join by pointing a camera at it."""
+    data = request.query.get("data", "")
+    if not data.startswith(("http://", "https://")) or len(data) > QR_MAX_LENGTH:
+        raise web.HTTPBadRequest(text="Send an http or https link of at most 200 characters.")
+    buffer = io.BytesIO()
+    segno.make(data, error="m").save(buffer, kind="svg", scale=4, border=2, dark="#111", light="#fff")
+    return web.Response(body=buffer.getvalue(), content_type="image/svg+xml", headers={"Cache-Control": "max-age=3600"})
 
 
 async def websocket(request: web.Request) -> web.WebSocketResponse:
@@ -1080,7 +1440,10 @@ async def broadcast(app: web.Application, code: str) -> None:
         if destination is None or destination.closed:
             continue
         try:
-            await destination.send_str(json.dumps(book.snapshot(code, player_id)))
+            snapshot = book.snapshot(code, player_id)
+            snapshot["robot_online"] = bool(app["bridge"].online)
+            snapshot["public_url"] = app["public_url"]
+            await destination.send_str(json.dumps(snapshot))
         except ClientConnectionError:
             continue
 
