@@ -1,5 +1,6 @@
 """Seat assignment for a lobby."""
 
+import time
 import unittest
 
 from server.lobby import MAX_PLAYERS, LobbyBook, LobbyError
@@ -19,17 +20,25 @@ class SeatTests(unittest.TestCase):
         self.assertEqual(players["Ada"]["seat"], 0)
         self.assertEqual(players["Bea"]["seat"], 1)
         self.assertNotIn("angle", players["Ada"])
+        snapshot = book.snapshot(code, ada)
+        self.assertEqual(snapshot["pose"], {"x": 0.0, "y": 0.0, "heading": 0.0, "known": True})
+        self.assertEqual([mark["angle"] for mark in snapshot["marks"]], [0, 180])
 
     def test_leave_before_start_packs_later_seats(self) -> None:
         book = LobbyBook()
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
         book.join(code, "Cam")
+        before = book.snapshot(code, ada)
+        self.assertEqual([mark["angle"] for mark in before["marks"]], [0, 120, 240])
         book.leave(bea)
         players = seats(book, code, ada)
         self.assertEqual(list(players), ["Ada", "Cam"])
         self.assertEqual(players["Ada"]["seat"], 0)
         self.assertEqual(players["Cam"]["seat"], 1)
+        after = book.snapshot(code, ada)
+        self.assertEqual([mark["angle"] for mark in after["marks"]], [0, 180])
+        self.assertEqual(after["pose"], {"x": 0.0, "y": 0.0, "heading": 0.0, "known": True})
 
     def test_start_stores_angles_and_a_later_leave_keeps_them(self) -> None:
         book = LobbyBook()
@@ -56,6 +65,25 @@ class SeatTests(unittest.TestCase):
         with self.assertRaises(LobbyError) as caught:
             book.join(code, "P8")
         self.assertEqual(caught.exception.message, "This lobby is full.")
+
+    def test_a_second_lobby_is_refused_while_one_is_open(self) -> None:
+        book = LobbyBook()
+        _, code = book.create("Ada")
+        with self.assertRaises(LobbyError) as caught:
+            book.create("Bea")
+        self.assertEqual(caught.exception.message, f"A lobby is already open. Join {code}.")
+        book.start(book.member_ids(code)[0])
+        with self.assertRaises(LobbyError) as caught:
+            book.create("Bea")
+        self.assertEqual(caught.exception.message, "A game is already running.")
+
+    def test_a_lobby_can_be_created_again_after_the_last_player_leaves(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        book.leave(ada)
+        _, new_code = book.create("Bea")
+        self.assertNotEqual(new_code, code)
+        self.assertEqual(len(book.snapshot(new_code, book.member_ids(new_code)[0])["players"]), 1)
 
 
 class RematchTests(unittest.TestCase):
@@ -98,6 +126,10 @@ class RematchTests(unittest.TestCase):
         book, ada, bea, _ = self.finished_lobby()
         code = book.rematch(ada)
         book.start(ada)
+        lobby = book._lobbies[code]
+        now = time.time()
+        lobby.opens_at = now - 1
+        lobby.pull_at = now
         book.record_shakes(bea, 3)
         self.assertEqual(seats(book, code, bea)["Bea"]["shakes"], 3)
 
@@ -110,6 +142,39 @@ class RematchTests(unittest.TestCase):
         with self.assertRaises(LobbyError) as caught:
             book.rematch(ada)
         self.assertEqual(caught.exception.message, "The game is not over yet.")
+
+    def test_a_new_lobby_draws_the_robot_in_the_middle(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        snapshot = book.snapshot(code, ada)
+        self.assertEqual(snapshot["marks"], [{"seat": 0, "angle": 0, "you": True, "chased": False}])
+        self.assertEqual(snapshot["pose"], {"x": 0.0, "y": 0.0, "heading": 0.0, "known": True})
+
+    def test_rematch_keeps_the_result_map_until_the_next_start(self) -> None:
+        book, ada, bea, old = self.finished_lobby()
+        finished = book._lobbies[old]
+        finished.pose_x = 40
+        finished.pose_y = -15
+        finished.pose_heading = 90
+        finished.pose_known = False
+        finished.chase_id = bea
+        code = book.rematch(ada)
+        snapshot = book.snapshot(code, ada)
+        self.assertEqual(snapshot["pose"], {"x": 40, "y": -15, "heading": 90, "known": False})
+        self.assertEqual(snapshot["marks"][0]["angle"], 0)
+        self.assertTrue(snapshot["marks"][0]["you"])
+        self.assertFalse(snapshot["marks"][0]["chased"])
+        self.assertEqual(snapshot["marks"][1]["angle"], 180)
+        self.assertTrue(snapshot["marks"][1]["chased"])
+        book.join(code, "Cam")
+        held = book.snapshot(code, ada)
+        self.assertEqual([mark["seat"] for mark in held["marks"]], [0, 1])
+        self.assertEqual(held["pose"]["x"], 40)
+        book.start(ada)
+        started = book.snapshot(code, ada)
+        self.assertEqual(started["pose"], {"x": 0.0, "y": 0.0, "heading": 0.0, "known": True})
+        self.assertEqual([mark["angle"] for mark in started["marks"]], [0, 120, 240])
+        self.assertTrue(all(mark["chased"] is False for mark in started["marks"]))
 
 
 if __name__ == "__main__":

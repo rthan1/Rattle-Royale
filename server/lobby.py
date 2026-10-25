@@ -1,4 +1,8 @@
-"""Open lobbies. A lobby holds a code and up to eight named players.
+"""One open lobby. It holds a code and up to eight named players.
+
+A second create is refused while that lobby still has someone in it. There is
+one robot, so the server does not run two games at once. Rematch replaces the
+open lobby instead of adding another.
 
 Each player gets a seat on a circle. Seats pack until the round starts, then
 lock, and each seat keeps the angle it had at the start. The creator can start
@@ -45,6 +49,14 @@ class Player:
 
 
 @dataclass
+class HeldMark:
+    player_id: str
+    seat: int
+    angle: float
+    chased: bool
+
+
+@dataclass
 class Lobby:
     code: str
     creator_id: str
@@ -58,6 +70,7 @@ class Lobby:
     pose_y: float = 0.0
     pose_heading: float = 0.0
     pose_known: bool = True
+    held_marks: list[HeldMark] | None = None
     chase_id: str | None = None
     motion_active: bool = False
     finish_reason: str | None = None
@@ -71,6 +84,11 @@ class LobbyBook:
 
     def create(self, name: str) -> tuple[str, str]:
         cleaned = clean_name(name)
+        if self._lobbies:
+            lobby = next(iter(self._lobbies.values()))
+            if lobby.started:
+                raise LobbyError("A game is already running.")
+            raise LobbyError(f"A lobby is already open. Join {lobby.code}.")
         code = self._new_code()
         player_id = secrets.token_hex(8)
         self._lobbies[code] = Lobby(code, player_id, [Player(player_id, cleaned, seat=0)])
@@ -124,6 +142,7 @@ class LobbyBook:
             player.angle = 360 * player.seat / count
         now = time.time()
         lobby.started = True
+        lobby.held_marks = None
         lobby.opens_at = now + COUNTDOWN_SECONDS
         lobby.ends_at = lobby.opens_at + ROUND_SECONDS
         lobby.pull_at = lobby.opens_at
@@ -138,7 +157,8 @@ class LobbyBook:
         """Reopen a finished lobby under a new code with the same players.
 
         Scores and seats start fresh and new players can join until the next
-        start. The new code keeps the old round's tasks from touching it.
+        start. The map stays on the result of the round that just ended until
+        that start. The new code keeps the old round's tasks from touching it.
         """
         lobby = self._lobby_for(player_id)
         if player_id != lobby.creator_id:
@@ -147,8 +167,20 @@ class LobbyBook:
             raise LobbyError("The game is not over yet.")
         code = self._new_code()
         players = [Player(player.player_id, player.name, seat=index) for index, player in enumerate(lobby.players)]
+        held = [
+            HeldMark(
+                player.player_id,
+                player.seat,
+                0.0 if player.angle is None else player.angle,
+                player.player_id == lobby.chase_id,
+            )
+            for player in lobby.players
+        ]
+        pose = (lobby.pose_x, lobby.pose_y, lobby.pose_heading, lobby.pose_known)
         del self._lobbies[lobby.code]
-        self._lobbies[code] = Lobby(code, lobby.creator_id, players)
+        opened = Lobby(code, lobby.creator_id, players, held_marks=held)
+        opened.pose_x, opened.pose_y, opened.pose_heading, opened.pose_known = pose
+        self._lobbies[code] = opened
         for player in players:
             self._membership[player.player_id] = code
         return code
@@ -230,14 +262,13 @@ class LobbyBook:
             "opens_at": None if lobby.opens_at is None else int(lobby.opens_at * 1000),
             "ends_at": None if lobby.ends_at is None else int(lobby.ends_at * 1000),
             "mark_radius": 152.4,
-            "pose": None
-            if not lobby.started
-            else {
+            "pose": {
                 "x": lobby.pose_x,
                 "y": lobby.pose_y,
                 "heading": lobby.pose_heading,
                 "known": lobby.pose_known,
             },
+            "marks": map_marks(lobby, viewer_id),
             "winners": winner_names(lobby) if lobby.finished else [],
             "reason": lobby.finish_reason if lobby.finished else None,
             "creator": viewer_id == lobby.creator_id,
@@ -379,6 +410,35 @@ class LobbyBook:
             code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
             if code not in self._lobbies:
                 return code
+
+
+def map_marks(lobby: Lobby, viewer_id: str) -> list[dict]:
+    """Marks to draw. A rematch keeps the previous result until the next start."""
+    if lobby.held_marks is not None:
+        return [
+            {
+                "seat": mark.seat,
+                "angle": mark.angle,
+                "you": mark.player_id == viewer_id,
+                "chased": mark.chased,
+            }
+            for mark in lobby.held_marks
+        ]
+    count = len(lobby.players)
+    marks = []
+    for player in lobby.players:
+        angle = player.angle
+        if angle is None:
+            angle = 0.0 if count == 0 else 360 * player.seat / count
+        marks.append(
+            {
+                "seat": player.seat,
+                "angle": angle,
+                "you": player.player_id == viewer_id,
+                "chased": lobby.started and player.player_id == lobby.chase_id,
+            }
+        )
+    return marks
 
 
 def snapshot_players(lobby: Lobby) -> list[Player]:

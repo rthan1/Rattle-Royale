@@ -47,11 +47,11 @@ The robot hardware is two 28BYJ-48 steppers, each on its own ULN2003 driver. `fi
 ## How a round feels
 
 1. The player opens the page and taps **Enable shaking**. The name and lobby controls stay hidden until that succeeds. A phone with no motion sensor never gets them.
-2. They enter a name and either create a lobby or join with a 4-character code. The lobby lists every name and seat. The phone says which seat they are and which floor mark to stand on.
+2. They enter a name and either create a lobby or join with a 4-character code. The lobby lists every name and seat, and it draws the arena. The robot is in the middle. Each current player is a mark on the circle, and those marks move when someone joins or leaves.
 3. The creator taps **Start game**. Seats lock, and each seat gets the angle it will keep for the round. A 3-second countdown runs. Shakes during it do not count, and the robot stays still. The host places the robot on the center mark, pointed at seat 0, before this.
-4. When the countdown hits zero, the 45-second chase begins. Shakes add to that player’s score only while it is running. The same shakes add pull. Pull fades while the round is open, and the phone with the strongest pull is the one the robot chases. The list on every phone shows the same scores and pull. The personal shake total is hidden on the join screen and appears once the chase has begun. The page draws the square arena, the marks, and the robot pose from the server.
+4. When the countdown hits zero, the 45-second chase begins. Shakes add to that player’s score only while it is running. The same shakes add pull. Pull fades while the round is open, and the phone with the strongest pull is the one the robot chases. The list on every phone shows the same scores and pull. The personal shake total is hidden on the join screen and appears once the chase has begun. The arena keeps drawing, now from the pose the server reports after each chunk.
 5. The round ends when the robot’s pose comes within 25 mm of a mark, or when the clock runs out. Arrival names that player. The clock names the chased player, or a draw when nobody has pull. The page says which one happened. The leave button is hidden during the 45 seconds and comes back with the result.
-6. Leaving the lobby removes that player and sets their phone’s shake count back to 0. After the result, the creator can tap **Rematch**. Everyone still there moves to a fresh lobby under a new code, with scores and seats reset, and new players can join with that code before the next start.
+6. Leaving the lobby removes that player and sets their phone’s shake count back to 0. After the result, the creator can tap **Rematch**. Everyone still there moves to a fresh lobby under a new code, with scores and seats reset, and new players can join with that code before the next start. The arena stays on the result of the round that just ended, robot included, until that next start puts the robot back in the middle and lays the marks out for whoever is there.
 
 One player is enough to start. The creator is the person who created the lobby. If they leave and someone is still in it, the next person in the list becomes the creator.
 
@@ -95,7 +95,7 @@ The server is given a short grace, about half a second after zero, to accept the
 
 ### Scoreboard
 
-During the countdown the page says “Get ready” and shows the seconds left before shakes count. During the chase it shows every player’s name, seat, shake count, and pull, ordered by pull. The local player’s row is marked. The chased row is marked with the word “chased”. A line above the list says “The robot is chasing” that name, “The robot is coming for you” on that player’s own phone, or “The robot is holding still” when nobody has pull. A square arena shows the marks and the robot. The robot is drawn from the pose in the latest server message: `x`, `y`, and heading. It updates when a chunk finishes, which is when the server knows the new pose. A countdown shows the time left in the chase, using the server’s end timestamp.
+The lobby draws the arena as soon as it exists. The robot starts in the middle, and the marks follow joins and leaves. A rematch keeps the previous result on that drawing until the next start. During the countdown the page says “Get ready” and shows the seconds left before shakes count. During the chase it shows every player’s name, seat, shake count, and pull, ordered by pull. The local player’s row is marked. The chased row is marked with the word “chased”. A line above the list says “The robot is chasing” that name, “The robot is coming for you” on that player’s own phone, or “The robot is holding still” when nobody has pull. A square arena shows the marks and the robot. The robot is drawn from the pose in the latest server message: `x`, `y`, and heading. It updates when a chunk finishes, which is when the server knows the new pose. A countdown shows the time left in the chase, using the server’s end timestamp.
 
 When the round ends, the page shows the winner and whether the robot got there or the clock ran out. A quiet round says draw. The chase line stays on the frozen pull from the end of the round. The leave button is hidden while the 45 seconds are running.
 
@@ -110,11 +110,12 @@ The game server is the source of truth for lobbies, seats, the clock, shake scor
 
 ### Room creation
 
-Any player who has enabled shaking can create a lobby from their phone.
+Any player who has enabled shaking can create a lobby from their phone. Only one lobby can exist at a time, because there is one robot.
 
-- The server generates a room code that is unique among lobbies that still have someone in them.
+- The server generates a room code. A second create is refused while that lobby still has someone in it. If the round has not started, the message includes the code to join. If a game is underway or the result is still up, the message says a game is already running.
+- Rematch replaces that lobby. It does not open a second one.
 - The creator is the first player. The lobby stores the player list and whether the round has started.
-- When the last player leaves, the lobby is deleted and the code can be used again.
+- When the last player leaves, the lobby is deleted and someone can create again.
 - There is no idle-room timer and no separate host screen on the laptop.
 
 ### Joining
@@ -131,7 +132,7 @@ The creator starts the round. Other players do not start it.
 
 Start locks the seats and broadcasts a 3-second countdown, then a chase that ends 45 seconds after the countdown. Phones display both timestamps from the server. Shakes before the countdown finishes do not score, on the phone or on the server. The stored pose starts at home: `(0, 0)`, heading 0. The chase loop waits out the countdown before it sends a chunk.
 
-Start also locks the seat list. Seat `i` of `N` players receives the angle `i × 360° / N`. People can still leave during the lobby, so the count is the number of players present at start. The page shows the seat number. The angle is stored for the later robot and is not drawn.
+Start also locks the seat list. Seat `i` of `N` players receives the angle `i × 360° / N`. People can still leave during the lobby, so the count is the number of players present at start. Before that, the page draws the same spacing from whoever is in the lobby, and those marks move when the roster changes. The robot is drawn at the center until the chase moves it. A rematch keeps the previous result on the arena until the next start.
 
 ### Shake score
 
@@ -276,7 +277,7 @@ A host creates a room from the laptop, or from a phone that then becomes the hos
 
 - The server generates a room code that is unique among rooms that are still open.
 - The room records a host id, the player list, the round state, and the robot pose. A new game sets the pose to home: `(0, 0)`, heading 0°.
-- One room is the expected case for a party. The server can still keep rooms separate so a second code cannot collide with the first.
+- One lobby is open at a time. A second create is refused until that lobby is empty. Rematch replaces it.
 - Closing the host does not have to delete the room immediately. An idle room expires after a timeout so codes get reused.
 
 ### Joining and seats

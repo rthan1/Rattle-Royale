@@ -198,7 +198,8 @@ PAGE = """<!DOCTYPE html>
 
     function drawArena(message) {
       const canvas = document.getElementById("arena");
-      if (!message.started || !message.pose) {
+      const marks = message.marks || [];
+      if (!message.pose || marks.length === 0) {
         canvas.hidden = true;
         return;
       }
@@ -222,17 +223,17 @@ PAGE = """<!DOCTYPE html>
       ctx.arc(cx, cy, half, 0, Math.PI * 2);
       ctx.strokeStyle = "#2a2a2a";
       ctx.stroke();
-      message.players.forEach((player) => {
-        if (player.angle == null) {
+      marks.forEach((mark) => {
+        if (mark.angle == null) {
           return;
         }
-        const radians = player.angle * Math.PI / 180;
+        const radians = mark.angle * Math.PI / 180;
         const spot = point(radius * Math.cos(radians), radius * Math.sin(radians));
         ctx.beginPath();
         ctx.arc(spot[0], spot[1], 12, 0, Math.PI * 2);
-        ctx.fillStyle = player.chased ? "#e24b4b" : "#dedede";
+        ctx.fillStyle = mark.chased ? "#e24b4b" : "#dedede";
         ctx.fill();
-        if (player.you) {
+        if (mark.you) {
           ctx.lineWidth = 3;
           ctx.strokeStyle = "#8ec8ff";
           ctx.stroke();
@@ -241,7 +242,7 @@ PAGE = """<!DOCTYPE html>
         ctx.font = "bold 12px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(String(player.seat), spot[0], spot[1]);
+        ctx.fillText(String(mark.seat), spot[0], spot[1]);
       });
       const pose = message.pose;
       const robot = point(pose.x, pose.y);
