@@ -210,14 +210,94 @@ PAGE = """<!DOCTYPE html>
       countdownTimer = setInterval(tick, 200);
     }
 
+    const GLIDE_MIN_MS = 250;
+    const GLIDE_MAX_MS = 3000;
+    const GLIDE_DEFAULT_MS = 1000;
+    const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let arenaMessage = null;
+    let robotShown = null;
+    let robotGlide = null;
+    let robotRound = null;
+    let robotPoseAt = null;
+    let robotGap = GLIDE_DEFAULT_MS;
+    let robotFrame = null;
+
+    function samePlace(a, b) {
+      return a.x === b.x && a.y === b.y && a.heading === b.heading;
+    }
+
+    function stopGlide() {
+      if (robotFrame !== null) {
+        cancelAnimationFrame(robotFrame);
+        robotFrame = null;
+      }
+      robotGlide = null;
+    }
+
+    function stepGlide() {
+      robotFrame = null;
+      if (robotGlide === null || arenaMessage === null) {
+        return;
+      }
+      const glide = robotGlide;
+      const t = Math.min(1, (performance.now() - glide.startedAt) / glide.duration);
+      const eased = (1 - Math.cos(Math.PI * t)) / 2;
+      const turn = ((glide.to.heading - glide.from.heading) % 360 + 540) % 360 - 180;
+      robotShown = {
+        x: glide.from.x + (glide.to.x - glide.from.x) * eased,
+        y: glide.from.y + (glide.to.y - glide.from.y) * eased,
+        heading: glide.from.heading + turn * eased,
+        known: glide.to.known,
+      };
+      paintArena(arenaMessage, robotShown);
+      if (t < 1) {
+        robotFrame = requestAnimationFrame(stepGlide);
+      } else {
+        robotGlide = null;
+      }
+    }
+
     function drawArena(message) {
       const canvas = document.getElementById("arena");
       const marks = message.marks || [];
       if (!message.pose || marks.length === 0) {
         canvas.hidden = true;
+        stopGlide();
+        arenaMessage = null;
+        robotShown = null;
+        robotRound = null;
         return;
       }
       canvas.hidden = false;
+      arenaMessage = message;
+      const pose = message.pose;
+      const target = { x: pose.x, y: pose.y, heading: pose.heading, known: pose.known };
+      const round = message.code + ":" + message.opens_at;
+      const now = performance.now();
+      const goal = robotGlide !== null ? robotGlide.to : robotShown;
+      if (robotShown === null || round !== robotRound || reduceMotion) {
+        stopGlide();
+        robotShown = target;
+        robotRound = round;
+        robotPoseAt = now;
+        robotGap = GLIDE_DEFAULT_MS;
+      } else if (!samePlace(goal, target)) {
+        const gap = now - robotPoseAt;
+        robotGap = gap > GLIDE_MAX_MS ? GLIDE_DEFAULT_MS : Math.max(GLIDE_MIN_MS, gap);
+        robotPoseAt = now;
+        robotGlide = { from: robotShown, to: target, startedAt: now, duration: robotGap };
+        if (robotFrame === null) {
+          robotFrame = requestAnimationFrame(stepGlide);
+        }
+      } else {
+        goal.known = target.known;
+        robotShown.known = target.known;
+      }
+      paintArena(message, robotShown);
+    }
+
+    function paintArena(message, pose) {
+      const canvas = document.getElementById("arena");
       const ctx = canvas.getContext("2d");
       const size = canvas.width;
       ctx.clearRect(0, 0, size, size);
@@ -258,7 +338,6 @@ PAGE = """<!DOCTYPE html>
         ctx.textBaseline = "middle";
         ctx.fillText(String(mark.seat), spot[0], spot[1]);
       });
-      const pose = message.pose;
       const robot = point(pose.x, pose.y);
       ctx.save();
       ctx.translate(robot[0], robot[1]);
