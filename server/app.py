@@ -134,6 +134,8 @@ PAGE = """<!DOCTYPE html>
     }
     #invite { margin: 0 0 1rem; }
     #invite-qr { display: block; width: 9.25rem; height: 9.25rem; margin: 0 auto 0.6rem; border-radius: 0.4rem; background: #fff; }
+    #host-tip { margin: 0 0 0.75rem; color: #ccc; font-size: 0.95rem; }
+    #host-tip.offline { color: #ff9a9a; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
   </style>
 </head>
@@ -168,6 +170,7 @@ PAGE = """<!DOCTYPE html>
       <p id="arena-caption" hidden></p>
       <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
+      <p id="host-tip" hidden></p>
       <button id="start" type="button" hidden>Start game</button>
       <button id="rematch" type="button" hidden>Rematch</button>
       <p id="waiting" hidden>Waiting for the creator to start</p>
@@ -621,6 +624,13 @@ PAGE = """<!DOCTYPE html>
           qr.setAttribute("src", source);
         }
       }
+      const tip = document.getElementById("host-tip");
+      const robotOffline = message.robot_online === false;
+      tip.hidden = !message.creator || message.started;
+      tip.classList.toggle("offline", robotOffline);
+      tip.textContent = robotOffline
+        ? "Robot offline. The round will run, but the robot won't move."
+        : "Robot ready. Put it on the center mark, facing seat 0, then start.";
       const waiting = document.getElementById("waiting");
       waiting.hidden = message.creator || (message.started && !message.finished);
       waiting.textContent = message.finished

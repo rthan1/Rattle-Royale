@@ -105,7 +105,7 @@ Each counted shake makes the shake counter pop, and Android phones give a 15 ms 
 
 While a lobby is open to joins, every phone shows a QR code and a “Share invite link” button. The link is the lobby address with `?code=` and the lobby code, and opening it fills in the code on the join screen. The server draws the QR code at `/qr.svg` with the `segno` package, and only for http or https links of at most 200 characters. Invites use the public address from `ngrok.yml` when there is one, so a host who opened the page on the laptop still hands out a link phones can open.
 
-Every lobby message says whether the robot is online. During a chase with the robot offline, the chase line reads “Robot offline, so it isn’t moving”.
+Every lobby message says whether the robot is online. Before the start, the creator sees “Robot ready. Put it on the center mark, facing seat 0, then start.” or, in red, “Robot offline. The round will run, but the robot won’t move.” During a chase with the robot offline, the chase line reads “Robot offline, so it isn’t moving”.
 
 When the round ends, the page shows the winner and whether the robot got there or the clock ran out. A quiet round says draw. The chase line stays on the frozen pull from the end of the round. The leave button is hidden while the 45 seconds are running.
 
