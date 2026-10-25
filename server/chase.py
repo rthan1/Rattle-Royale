@@ -2,7 +2,8 @@
 
 The phone server calls this while a round is open. A missing robot leaves the
 round running and the robot still. A failed move marks the pose unknown and
-ends the round as a draw.
+ends the round as a draw. Between Bomba rounds, go_home drives the robot back
+to the center and keeps the pose it tracked.
 """
 
 import asyncio
@@ -10,7 +11,7 @@ import logging
 
 from server.bridge import BridgeError, MoveResult
 from server.lobby import LobbyBook
-from server.planner import Chunk, mark_at, plan
+from server.planner import Chunk, home_chunk, mark_at, plan
 from server.pose import Pose
 
 log = logging.getLogger(__name__)
@@ -18,9 +19,9 @@ log = logging.getLogger(__name__)
 LOOK_AGAIN_SECONDS = 0.05
 
 
-async def follow(book: LobbyBook, robot: object, code: str, on_pose=None) -> None:
-    """Chase the pull leader until the round ends."""
-    pose = Pose()
+async def follow(book: LobbyBook, robot: object, code: str, on_pose=None, pose: Pose | None = None) -> None:
+    """Chase the target until the round ends. A Bomba round passes the pose it kept."""
+    pose = Pose() if pose is None else pose
     told_offline = False
     while book.pull_round_open(code):
         if not book.scoring_open(code):
@@ -94,6 +95,40 @@ async def follow(book: LobbyBook, robot: object, code: str, on_pose=None) -> Non
             return
         if retry:
             await asyncio.sleep(LOOK_AGAIN_SECONDS)
+
+
+async def go_home(book: LobbyBook, robot: object, code: str, pose: Pose, on_pose=None) -> None:
+    """Drive back to the center between Bomba rounds. Offline, the robot stays put."""
+    book.set_homing(code, _online(robot) and home_chunk(pose) is not None)
+    try:
+        while book.between_rounds(code):
+            chunk = home_chunk(pose)
+            if chunk is None or not _online(robot):
+                return
+            log.info("lobby %s home %s %s %s", code, chunk.command, chunk.steps, chunk.direction)
+            try:
+                result = await asyncio.to_thread(_dispatch, robot, chunk)
+            except BridgeError as error:
+                if error.message == "A move is already running.":
+                    await asyncio.sleep(LOOK_AGAIN_SECONDS)
+                    continue
+                pose.mark_unknown()
+                book.remember_pose(code, pose.x, pose.y, pose.heading, False)
+                book.finish_draw(code)
+                log.info("lobby %s drive home failed: %s", code, error.message)
+                return
+            if result.stopped or result.command is None:
+                pose.mark_unknown()
+                book.remember_pose(code, pose.x, pose.y, pose.heading, False)
+                book.finish_draw(code)
+                log.info("lobby %s move home stopped before it finished", code)
+                return
+            pose.apply(result.command, result.steps, result.direction)
+            book.remember_pose(code, pose.x, pose.y, pose.heading, pose.known)
+            if on_pose is not None:
+                await on_pose()
+    finally:
+        book.set_homing(code, False)
 
 
 def _declare_arrival(book: LobbyBook, pose: Pose, code: str) -> bool:

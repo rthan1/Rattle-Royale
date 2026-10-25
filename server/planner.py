@@ -17,6 +17,7 @@ REVERSE_DEGREES = 90.0
 MAX_SPIN_DEGREES = 5.0
 MAX_DRIVE_MM = 30.0
 ARRIVAL_RADIUS_MM = 25.0
+HOME_RADIUS_MM = 10.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,17 @@ def next_chunk(pose: Pose, target: tuple[float, float] | None) -> Chunk | None:
     if distance <= ARRIVAL_RADIUS_MM:
         return None
     bearing = _bearing(pose.x, pose.y, target[0], target[1])
+    return choose_chunk(_signed_error(pose.heading, bearing), distance)
+
+
+def home_chunk(pose: Pose) -> Chunk | None:
+    """The next chunk back to the center, or nothing once the robot is within ``HOME_RADIUS_MM``."""
+    if not pose.known:
+        return None
+    distance = math.hypot(pose.x, pose.y)
+    if distance <= HOME_RADIUS_MM:
+        return None
+    bearing = _bearing(pose.x, pose.y, 0.0, 0.0)
     return choose_chunk(_signed_error(pose.heading, bearing), distance)
 
 

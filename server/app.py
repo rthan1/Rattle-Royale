@@ -6,7 +6,9 @@ before shakes count, so the host cannot start early. The page draws the arena
 and the robot pose from the server. Shakes then add pull, and the robot creeps
 toward the leader when the Arduino is online. The creator can pick Endurance
 instead, where each shake spends a meter that refills during the round.
-Reaching a mark wins. If time runs out, the closest player wins.
+Reaching a mark wins. If time runs out, the closest player wins. In Bomba the
+robot hunts the weakest shaker instead, and being reached or closest knocks a
+player out. Rounds repeat with the survivors until one is left.
 """
 
 import asyncio
@@ -20,13 +22,15 @@ import segno
 from aiohttp import ClientConnectionError, WSMsgType, web
 
 from server.bridge import Bridge
-from server.chase import follow
+from server.chase import follow, go_home
 from server.lobby import PULL_TICK_SECONDS, LobbyBook, LobbyError
+from server.pose import Pose
 
 HOST = "0.0.0.0"
 PORT = 8080
 ROBOT_IMAGE = Path(__file__).resolve().parent / "static" / "robot.svg"
 QR_MAX_LENGTH = 200
+BOMBA_BREAK_SECONDS = 3.0
 
 log = logging.getLogger(__name__)
 
@@ -151,9 +155,14 @@ PAGE = """<!DOCTYPE html>
     #host-tip.offline { color: #ff9a9a; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
     #modes { display: flex; gap: 0.5rem; margin: 0 0 0.9rem; }
+    #modes[hidden] { display: none; }
     #modes button { flex: 1; width: auto; margin: 0; }
     #modes button.picked { outline: 3px solid #8ec8ff; }
     #mode-label { margin: 0 0 0.9rem; color: #aaa; }
+    #mode-help { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; }
+    #result.out { color: #ff9a6b; }
+    #players li.out { opacity: 0.45; }
+    #players li.out .seat { background: #555; color: #ddd; }
     #endurance { margin: 0 0 0.9rem; }
     #endurance-label { margin: 0 0 0.35rem; color: #aaa; }
     #endurance-track { height: 1.1rem; background: #2a2a2a; border-radius: 999px; overflow: hidden; }
@@ -197,8 +206,10 @@ PAGE = """<!DOCTYPE html>
       <div id="modes" hidden>
         <button id="mode-chase" type="button">Chase</button>
         <button id="mode-endurance" type="button">Endurance</button>
+        <button id="mode-bomba" type="button">Bomba</button>
       </div>
       <p id="mode-label" hidden></p>
+      <p id="mode-help" hidden></p>
       <div id="endurance" hidden>
         <p id="endurance-label">Endurance</p>
         <div id="endurance-track"><div id="endurance-fill"></div></div>
@@ -280,6 +291,26 @@ PAGE = """<!DOCTYPE html>
       tone.frequency.value = frequency;
       gain.gain.setValueAtTime(0.0001, start);
       gain.gain.exponentialRampToValueAtTime(volume, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, end);
+      tone.connect(gain).connect(audio.destination);
+      tone.start(start);
+      tone.stop(end);
+    }
+
+    function boomSound() {
+      if (!audio || audio.state !== "running") {
+        beep(110, 600);
+        return;
+      }
+      const start = audio.currentTime;
+      const end = start + 0.8;
+      const tone = audio.createOscillator();
+      const gain = audio.createGain();
+      tone.type = "sawtooth";
+      tone.frequency.setValueAtTime(220, start);
+      tone.frequency.exponentialRampToValueAtTime(35, end);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.5, start + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, end);
       tone.connect(gain).connect(audio.destination);
       tone.start(start);
@@ -484,9 +515,42 @@ PAGE = """<!DOCTYPE html>
     robotImage.src = "/robot.svg";
 
     let pulseFrame = null;
+    const BOOM_MS = 1400;
+    let boomKey = null;
+    let boomStartedAt = 0;
+    let boomFrame = null;
+
+    function roundLive(message) {
+      return message.started && !message.finished && !(message.bomba && message.bomba.between);
+    }
 
     function wantsPulse(message) {
-      return !reduceMotion && message.started && !message.finished && (message.marks || []).some((mark) => mark.chased);
+      return !reduceMotion && roundLive(message) && (message.marks || []).some((mark) => mark.chased);
+    }
+
+    function boomProgress() {
+      return reduceMotion ? 1 : Math.min(1, (performance.now() - boomStartedAt) / BOOM_MS);
+    }
+
+    function startBoom(key) {
+      boomKey = key;
+      boomStartedAt = performance.now();
+      if (boomFrame === null && !reduceMotion) {
+        boomFrame = requestAnimationFrame(stepBoom);
+      }
+    }
+
+    function stepBoom() {
+      boomFrame = null;
+      if (arenaMessage === null || robotShown === null) {
+        return;
+      }
+      if (robotGlide === null) {
+        paintArena(arenaMessage, robotShown);
+      }
+      if (boomProgress() < 1) {
+        boomFrame = requestAnimationFrame(stepBoom);
+      }
     }
 
     function stepPulse() {
@@ -609,7 +673,7 @@ PAGE = """<!DOCTYPE html>
       ctx.strokeStyle = "#2a2a2a";
       ctx.stroke();
       const marks = message.marks || [];
-      const live = message.started && !message.finished;
+      const live = roundLive(message);
       const target = live ? marks.find((mark) => mark.chased && mark.angle != null) : null;
       if (target) {
         const aim = target.angle * Math.PI / 180;
@@ -641,7 +705,7 @@ PAGE = """<!DOCTYPE html>
         const spot = point(radius * Math.cos(radians), radius * Math.sin(radians));
         ctx.beginPath();
         ctx.arc(spot[0], spot[1], 12, 0, Math.PI * 2);
-        ctx.fillStyle = mark.chased ? "#e24b4b" : "#dedede";
+        ctx.fillStyle = mark.out ? "#555" : mark.chased ? "#e24b4b" : "#dedede";
         ctx.fill();
         if (mark.you) {
           ctx.lineWidth = 3;
@@ -652,7 +716,7 @@ PAGE = """<!DOCTYPE html>
         ctx.font = "bold 12px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(String(mark.seat), spot[0], spot[1]);
+        ctx.fillText(mark.out ? "✕" : String(mark.seat), spot[0], spot[1]);
         if (mark.name) {
           const label = point((radius - NAME_INSET) * Math.cos(radians), (radius - NAME_INSET) * Math.sin(radians));
           const name = mark.name.length > NAME_MAX ? mark.name.slice(0, NAME_MAX - 1) + "…" : mark.name;
@@ -667,6 +731,16 @@ PAGE = """<!DOCTYPE html>
       });
       const robot = point(pose.x, pose.y);
       const edge = ROBOT_SIZE / 2;
+      if (message.bomba && message.bomba.homing) {
+        ctx.save();
+        ctx.setLineDash([4, 6]);
+        ctx.strokeStyle = "#ffc14d";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.save();
       ctx.translate(robot[0], robot[1]);
       ctx.globalAlpha = pose.known ? 1 : 0.45;
@@ -679,12 +753,46 @@ PAGE = """<!DOCTYPE html>
         ctx.fill();
       }
       ctx.restore();
+      const progress = boomProgress();
+      marks.forEach((mark) => {
+        if (mark.out && mark.angle != null) {
+          const radians = mark.angle * Math.PI / 180;
+          paintBoom(ctx, point(radius * Math.cos(radians), radius * Math.sin(radians)), progress);
+        }
+      });
+    }
+
+    function paintBoom(ctx, spot, t) {
+      if (t >= 1) {
+        return;
+      }
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.beginPath();
+      ctx.arc(spot[0], spot[1], 12 + 46 * t, 0, Math.PI * 2);
+      ctx.fillStyle = "#ff9f43";
+      ctx.fill();
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "#e24b4b";
+      ctx.beginPath();
+      ctx.arc(spot[0], spot[1], 18 + 64 * t, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.font = Math.round(16 + 30 * Math.sin(Math.PI * Math.min(1, t * 1.4))) + "px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("💥", spot[0], spot[1]);
+      ctx.restore();
     }
 
     function showLobby(message) {
       inLobby = true;
       lobbyMessage = message;
-      const nowPlaying = message.started && !message.finished;
+      const mine = message.players.find((player) => player.you);
+      const bomba = message.bomba || null;
+      const between = Boolean(bomba && bomba.between);
+      const knockedOut = Boolean(mine && mine.out);
+      const live = roundLive(message);
+      const nowPlaying = live && !knockedOut;
       if (nowPlaying && !playing) {
         resetShakes();
         showNotice("");
@@ -693,10 +801,10 @@ PAGE = """<!DOCTYPE html>
       const previousEnd = roundEndsAt;
       const previousOpen = roundOpensAt;
       playing = nowPlaying;
-      roundOpensAt = message.started ? message.opens_at : null;
-      roundEndsAt = message.started ? message.ends_at : null;
+      roundOpensAt = message.started && !between ? message.opens_at : null;
+      roundEndsAt = message.started && !between ? message.ends_at : null;
       const ready = roundOpensAt !== null && Date.now() < roundOpensAt;
-      shakesEl.hidden = !message.started || ready;
+      shakesEl.hidden = !message.started || ready || knockedOut || (between && bomba.regrouped);
       errorEl.textContent = "";
       joinEl.hidden = true;
       lobbyEl.hidden = false;
@@ -704,16 +812,25 @@ PAGE = """<!DOCTYPE html>
       document.getElementById("lobby-code").textContent = message.code;
       document.getElementById("lobby-count").textContent =
         message.players.length + " of " + message.max;
-      const mine = message.players.find((player) => player.you);
       const choosing = Boolean(message.creator && !message.started);
       const modes = document.getElementById("modes");
       modes.hidden = !choosing;
-      document.getElementById("mode-chase").classList.toggle("picked", message.mode !== "endurance");
+      document.getElementById("mode-chase").classList.toggle("picked", message.mode === "chase");
       document.getElementById("mode-endurance").classList.toggle("picked", message.mode === "endurance");
+      document.getElementById("mode-bomba").classList.toggle("picked", message.mode === "bomba");
       const modeLabel = document.getElementById("mode-label");
       const enduranceMode = message.mode === "endurance";
       modeLabel.hidden = choosing || (message.started && enduranceMode);
-      modeLabel.textContent = enduranceMode ? "Endurance" : "Chase";
+      modeLabel.textContent = bomba
+        ? (message.started ? "Bomba · Round " + bomba.round + " · " + bomba.alive + " left" : "Bomba")
+        : enduranceMode ? "Endurance" : "Chase";
+      const modeHelp = document.getElementById("mode-help");
+      modeHelp.hidden = message.started;
+      modeHelp.textContent = bomba
+        ? "The robot hunts whoever shakes least. If it reaches you, or you're closest when time runs out, you're out. Ties knock out everyone tied. Last one standing wins."
+        : enduranceMode
+          ? "Each shake spends a meter that refills. The robot chases whoever shakes most."
+          : "The robot chases whoever shakes most. Get reached, or be closest at the end, to win.";
       const meter = document.getElementById("endurance");
       const showMeter = enduranceMode && message.started && mine && typeof mine.endurance === "number";
       meter.hidden = !showMeter;
@@ -747,7 +864,9 @@ PAGE = """<!DOCTYPE html>
       tip.hidden = !message.creator || message.started;
       tip.classList.toggle("offline", robotOffline);
       tip.textContent = robotOffline
-        ? "Robot offline. The round will run, but the robot won't move."
+        ? message.mode === "bomba"
+          ? "Robot offline. In Bomba it won't move, so everyone ties and goes out in round 1."
+          : "Robot offline. The round will run, but the robot won't move."
         : "Robot ready. Put it on the center mark, facing seat 0, then start.";
       const waiting = document.getElementById("waiting");
       waiting.hidden = message.creator || (message.started && !message.finished);
@@ -758,14 +877,23 @@ PAGE = """<!DOCTYPE html>
       document.getElementById("your-seat").textContent = mine ? "You are seat " + mine.seat : "";
       document.getElementById("your-mark").textContent = !mine
         ? ""
-        : message.last_match
-          ? "Your mark appears when the game starts"
-          : "Stand on mark " + mine.seat;
+        : knockedOut
+          ? (message.finished ? "" : "You're out. Watch who survives.")
+          : message.last_match
+            ? "Your mark appears when the game starts"
+            : between && bomba.regrouped
+              ? "Move to mark " + mine.seat
+              : "Stand on mark " + mine.seat;
       const chase = document.getElementById("chase");
       if (ready) {
         chase.hidden = false;
-        chase.textContent = "Get ready";
-      } else if (message.started && !message.finished) {
+        chase.textContent = bomba && bomba.round > 1 ? "Round " + bomba.round + ": get ready" : "Get ready";
+      } else if (between) {
+        chase.hidden = !bomba.regrouped;
+        chase.textContent = bomba.homing
+          ? "The robot is driving back to the center"
+          : "Next round starting";
+      } else if (live) {
         const chased = message.players.find((player) => player.chased);
         chase.hidden = false;
         if (!chased) {
@@ -779,13 +907,13 @@ PAGE = """<!DOCTYPE html>
         chase.hidden = true;
         chase.textContent = "";
       }
-      if (message.started && !message.finished && !ready && message.robot_online === false) {
+      if (live && !ready && message.robot_online === false) {
         chase.textContent = "Robot offline, so it isn't moving";
       }
       const clock = document.getElementById("clock");
       const result = document.getElementById("result");
       const resultDetail = document.getElementById("result-detail");
-      if (playing) {
+      if (live) {
         clock.hidden = false;
         result.hidden = true;
         result.textContent = "";
@@ -793,7 +921,18 @@ PAGE = """<!DOCTYPE html>
         if (countdownTimer === null || previousOpen !== roundOpensAt || previousEnd !== roundEndsAt) {
           runCountdown();
         }
+      } else if (between) {
+        stopCountdown();
+        clock.hidden = true;
+        const outcome = knockoutFor(bomba, mine);
+        result.hidden = false;
+        result.textContent = outcome.headline;
+        result.classList.remove("won");
+        result.classList.add("out");
+        resultDetail.hidden = !outcome.detail;
+        resultDetail.textContent = outcome.detail;
       } else if (message.finished) {
+        result.classList.remove("out");
         if (mine) {
           shakeCount = mine.shakes;
           showShakeCount();
@@ -807,7 +946,7 @@ PAGE = """<!DOCTYPE html>
         resultDetail.hidden = !outcome.detail;
         resultDetail.textContent = outcome.detail;
         const finishKey = message.code + ":" + message.ends_at;
-        if (celebrated !== finishKey) {
+        if (celebrated !== finishKey && !(bomba && bomba.out.length > 0)) {
           beep(outcome.won ? 880 : 300, 500);
           if (outcome.won && navigator.vibrate) {
             navigator.vibrate([120, 60, 240]);
@@ -820,6 +959,21 @@ PAGE = """<!DOCTYPE html>
         result.hidden = true;
         result.textContent = "";
         resultDetail.hidden = true;
+      }
+      if (bomba && bomba.out.length > 0 && (between || message.finished)) {
+        const key = message.code + ":" + bomba.round;
+        if (boomKey !== key) {
+          startBoom(key);
+          boomSound();
+          if (navigator.vibrate) {
+            navigator.vibrate(mine && bomba.out.includes(mine.name) ? [300, 80, 300] : 120);
+          }
+          if (message.finished) {
+            celebrated = message.code + ":" + message.ends_at;
+            const won = Boolean(mine) && (message.winners || []).includes(mine.name);
+            setTimeout(() => beep(won ? 880 : 300, 500), 900);
+          }
+        }
       }
       const list = document.getElementById("players");
       list.replaceChildren();
@@ -838,8 +992,51 @@ PAGE = """<!DOCTYPE html>
 
     let celebrated = null;
 
+    function knockoutFor(bomba, mine) {
+      const out = bomba.out || [];
+      const youOut = Boolean(mine) && out.includes(mine.name);
+      const others = out.filter((name) => !mine || name !== mine.name);
+      let headline;
+      if (youOut) {
+        headline = "💥 You're out!";
+      } else if (out.length === 1) {
+        headline = "💥 " + out[0] + " is out!";
+      } else {
+        headline = "💥 " + out.join(" & ") + " are out!";
+      }
+      let detail;
+      if (bomba.out_reason === "arrival") {
+        detail = youOut ? "The robot reached you" : "The robot reached them";
+      } else if (out.length > 1) {
+        detail = youOut
+          ? "Tied with " + others.join(" & ") + " for closest, so you're all out"
+          : "Tied for closest, so they're all out";
+      } else {
+        detail = youOut ? "You were closest when time ran out" : "Closest when time ran out";
+      }
+      if (bomba.regrouped) {
+        detail += ". " + bomba.alive + " left. Round " + bomba.round + " is next.";
+      }
+      return { headline, detail };
+    }
+
     function resultFor(message, mine) {
       const winners = message.winners || [];
+      if (message.bomba) {
+        const lastOut = message.bomba.out || [];
+        if (winners.length === 0) {
+          return {
+            headline: "Nobody survived",
+            detail: lastOut.length > 1 ? lastOut.join(" & ") + " tied for closest, so all are out" : "",
+            won: false,
+          };
+        }
+        const knockedOut = lastOut.length > 0 ? "💥 " + lastOut.join(" & ") + " went out last. " : "";
+        if (mine && winners.includes(mine.name)) {
+          return { headline: "You survived!", detail: knockedOut + "Last one standing", won: true };
+        }
+        return { headline: winners[0] + " survived", detail: knockedOut + "Last one standing", won: false };
+      }
       let detail = "";
       if (message.reason === "arrival") {
         detail = "The robot reached them";
@@ -867,15 +1064,23 @@ PAGE = """<!DOCTYPE html>
     function playerRow(player, started, topPull) {
       const item = document.createElement("li");
       item.classList.toggle("you", player.you);
-      item.classList.toggle("target", started && player.chased);
+      item.classList.toggle("target", started && player.chased && !player.out);
+      item.classList.toggle("out", Boolean(player.out));
       const seat = document.createElement("span");
       seat.className = "seat";
-      seat.textContent = String(player.seat);
+      seat.textContent = player.out ? "✕" : String(player.seat);
       const who = document.createElement("span");
       who.className = "who";
       who.textContent = player.you ? player.name + " (you)" : player.name;
       item.append(seat, who);
       if (!started) {
+        return item;
+      }
+      if (player.out) {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = "out";
+        item.append(tag);
         return item;
       }
       if (player.chased) {
@@ -901,12 +1106,24 @@ PAGE = """<!DOCTYPE html>
         const winners = message.last_match.winners || [];
         return winners.length === 0 ? "Last match: draw" : "Last match: " + winners.join(" & ") + " won";
       }
+      const bomba = message.bomba;
+      if (bomba && message.started && !message.finished && (bomba.between || ready)) {
+        return bomba.regrouped || ready ? "Round " + bomba.round + ": " + bomba.alive + " players left" : "";
+      }
       if (!message.started || message.finished || ready) {
         return "";
       }
       const leaders = message.leaders || [];
       if (leaders.length === 0) {
         return "";
+      }
+      if (bomba) {
+        const alive = message.players.filter((player) => !player.out).length;
+        if (leaders.length > 1) {
+          return leaders.length === alive ? "Everyone is even" : "Tied for closest: " + leaders.join(" & ");
+        }
+        const me = message.players.find((player) => player.you);
+        return me && me.name === leaders[0] ? "You're closest to the robot!" : leaders[0] + " is closest to the robot";
       }
       if (leaders.length > 1) {
         return leaders.length === message.players.length ? "Everyone is tied" : "Tied: " + leaders.join(" & ");
@@ -942,6 +1159,9 @@ PAGE = """<!DOCTYPE html>
     });
     document.getElementById("mode-endurance").addEventListener("click", () => {
       send({ type: "mode", mode: "endurance" });
+    });
+    document.getElementById("mode-bomba").addEventListener("click", () => {
+      send({ type: "mode", mode: "bomba" });
     });
     let inviteLink = "";
     document.getElementById("share").addEventListener("click", async () => {
@@ -1416,9 +1636,12 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
             code = book.start(player_id)
             log.info("lobby %s started", code)
             await broadcast(app, code)
-            app.setdefault("round_tasks", {})[code] = asyncio.create_task(finish_when_due(app, code))
-            app.setdefault("pull_tasks", {})[code] = asyncio.create_task(fade_pull(app, code))
-            app.setdefault("chase_tasks", {})[code] = asyncio.create_task(chase_round(app, code))
+            if book.mode_of(code) == "bomba":
+                app.setdefault("bomba_tasks", {})[code] = asyncio.create_task(bomba_game(app, code))
+            else:
+                app.setdefault("round_tasks", {})[code] = asyncio.create_task(finish_when_due(app, code))
+                app.setdefault("pull_tasks", {})[code] = asyncio.create_task(fade_pull(app, code))
+                app.setdefault("chase_tasks", {})[code] = asyncio.create_task(chase_round(app, code))
         elif kind == "mode":
             if player_id is None:
                 raise LobbyError("You are not in a lobby.")
@@ -1450,7 +1673,46 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
     return player_id
 
 
-async def chase_round(app: web.Application, code: str) -> None:
+async def bomba_game(app: web.Application, code: str) -> None:
+    """Bomba rounds until one player is left.
+
+    After a knockout the phones play it out for a few seconds, the survivors
+    are spaced out again, and the robot drives back to the center. The next
+    countdown starts once it is there. The pose carries over between rounds.
+    """
+    book: LobbyBook = app["book"]
+    pose = Pose()
+
+    async def publish() -> None:
+        if book.member_ids(code):
+            await broadcast(app, code)
+
+    try:
+        while True:
+            await asyncio.gather(finish_when_due(app, code), fade_pull(app, code), chase_round(app, code, pose))
+            if not book.between_rounds(code):
+                return
+            await publish()
+            homing = asyncio.create_task(go_home(book, app["bridge"], code, pose, publish))
+            try:
+                await asyncio.sleep(BOMBA_BREAK_SECONDS)
+                if book.regroup(code):
+                    await publish()
+                await homing
+            finally:
+                if not homing.done():
+                    homing.cancel()
+            if not book.next_round(code):
+                if book.member_ids(code):
+                    await broadcast(app, code)
+                return
+            log.info("lobby %s next bomba round", code)
+            await publish()
+    finally:
+        app.setdefault("bomba_tasks", {}).pop(code, None)
+
+
+async def chase_round(app: web.Application, code: str, pose: Pose | None = None) -> None:
     book: LobbyBook = app["book"]
 
     async def publish() -> None:
@@ -1458,7 +1720,7 @@ async def chase_round(app: web.Application, code: str) -> None:
             await broadcast(app, code)
 
     try:
-        await follow(book, app["bridge"], code, publish)
+        await follow(book, app["bridge"], code, publish, pose)
     except Exception:
         log.exception("lobby %s chase stopped", code)
         book.finish_draw(code)

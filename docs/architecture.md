@@ -47,13 +47,28 @@ The robot hardware is two 28BYJ-48 steppers, each on its own ULN2003 driver. `fi
 ## How a round feels
 
 1. The player opens the page and taps **Enable shaking**. The name and lobby controls stay hidden until that succeeds. A phone with no motion sensor never gets them.
-2. They enter a name and either create a lobby or join with a 4-character code. The lobby lists every name and seat, and it draws the arena. The robot is in the middle. Each current player is a mark on the circle, and those marks move when someone joins or leaves. The creator picks Chase or Endurance. Chase counts every shake. Endurance gives each player a meter of 5. Each shake spends 1, and the meter refills by 0.4 per second, so a burst runs out and later shakes do not score until it comes back. The phone fills that bar on its own clock at 0.4 per second. Server updates do not pull the number backward.
+2. They enter a name and either create a lobby or join with a 4-character code. The lobby lists every name and seat, and it draws the arena. The robot is in the middle. Each current player is a mark on the circle, and those marks move when someone joins or leaves. The creator picks Chase, Endurance, or Bomba. Chase counts every shake. Endurance gives each player a meter of 5. Each shake spends 1, and the meter refills by 0.4 per second, so a burst runs out and later shakes do not score until it comes back. The phone fills that bar on its own clock at 0.4 per second. Server updates do not pull the number backward.
 3. The creator taps **Start game**. Seats lock, and each seat gets the angle it will keep for the round. A 3-second countdown runs. Shakes during it do not count, and the robot stays still. The host places the robot on the center mark, pointed at seat 0, before this.
 4. When the countdown hits zero, the 45-second chase begins. Shakes add to that player’s score only while it is running. The same shakes add pull. Pull fades while the round is open, and the phone with the strongest pull is the one the robot chases. The list on every phone shows the same scores and pull. The personal shake total is hidden on the join screen and appears once the chase has begun. The arena keeps drawing, now from the pose the server reports after each chunk.
 5. The round ends when the robot’s pose comes within 25 mm of a mark, or when the clock runs out. Arrival names that player. The clock names the closest player, or everyone tied for closest. The page says which one happened. The leave button is hidden during the 45 seconds and comes back with the result.
 6. Leaving the lobby removes that player and sets their phone’s shake count back to 0. After the result, the creator can tap **Rematch**. Everyone still there moves to a fresh lobby under a new code, with scores and seats reset, and new players can join with that code before the next start. The arena stays on the result of the round that just ended, robot included, until that next start puts the robot back in the middle and lays the marks out for whoever is there.
 
 One player is enough to start. The creator is the person who created the lobby. If they leave and someone is still in it, the next person in the list becomes the creator.
+
+## Bomba
+
+Bomba is a knockout mode. Every shake counts, as in Chase, but the robot hunts the survivor with the **least** pull, so the player who stops shaking is the one it comes for. Each round starts aimed at a random survivor, so no seat is always hunted first. After that, equal pull keeps the current target. The target only switches when someone else's pull falls below the current target's by at least 1 pull, or by 15% of it, whichever is larger. Bomba needs at least 2 players.
+
+A round ends the same two ways as Chase, but the named players are knocked out instead of winning:
+
+- **Arrival.** The robot comes within 25 mm of a mark, any mark, and that player is out.
+- **Clock.** Time runs out, and the closest player is out. Everyone tied for closest is out.
+
+When two or more players are still in, the round is over but the game is not. Phones show "💥 Bea is out!" with an explosion on that mark, a falling boom, and a buzz. After 3 seconds (`BOMBA_BREAK_SECONDS` in `server/app.py`) the survivors get new seats, numbered from 0 in their old seat order and spaced evenly around the center. Scores and pull reset. Knocked-out players stay in the lobby as spectators. They no longer have a mark, their shakes do not count, and their row reads "out". While that happens, the robot drives itself back to within 10 mm of the center (`home_chunk` in `server/planner.py`, `go_home` in `server/chase.py`). The pose carries over between rounds instead of being reset by hand. Once the robot is home, the next round opens with a 5-second countdown (`BOMBA_COUNTDOWN_SECONDS`), so players have time to reach their new marks, and then a normal clock.
+
+The game ends when one player or none is left. One survivor wins ("You survived!"). If everyone left is knocked out at once, for example two players tied for closest, nobody wins. A leave that drops the game to one survivor also ends it. A failed move, during a round or on the way home, ends the game as a draw. Rematch works as in the other modes and keeps Bomba selected.
+
+With the robot offline it never leaves the center, so every round ends with all survivors tied and knocked out together. The creator's robot line warns about that before the start. A result keeps naming the winner, and whoever went out last, after they leave the lobby.
 
 ## Phone client
 

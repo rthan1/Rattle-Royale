@@ -13,12 +13,17 @@ during the round, and a shake with an empty meter does not score. Each
 accepted shake adds pull that fades, and the chase target is the player the
 robot follows. The player whose mark the robot reaches wins. If the clock
 runs out first, the closest player wins, and players at the same distance tie.
+
+Bomba turns that around. The robot hunts whoever has the least pull. Reaching
+a mark knocks that player out, and so does being closest when the clock runs
+out. Players tied for closest are all out. Survivors are spaced out again
+around the center for the next round, until one player is left.
 """
 
 import math
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from server.planner import mark_at
 
@@ -35,7 +40,9 @@ PULL_FLOOR = 0.05
 ENDURANCE_MAX = 5.0
 ENDURANCE_PER_SHAKE = 1.0
 ENDURANCE_REFILL_PER_SECOND = 0.4
-MODES = ("chase", "endurance")
+BOMBA_MIN_PLAYERS = 2
+BOMBA_COUNTDOWN_SECONDS = 5
+MODES = ("chase", "endurance", "bomba")
 CODE_LENGTH = 4
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -57,6 +64,7 @@ class Player:
     pull: float = 0.0
     endurance: float = ENDURANCE_MAX
     endurance_at: float | None = None
+    out: bool = False
 
 
 @dataclass
@@ -89,6 +97,13 @@ class Lobby:
     finish_reason: str | None = None
     winner_ids: list[str] | None = None
     mode: str = "chase"
+    round_number: int = 1
+    round_over: bool = False
+    regrouped: bool = False
+    homing: bool = False
+    out_ids: list[str] | None = None
+    out_reason: str | None = None
+    departed: dict[str, str] = field(default_factory=dict)
 
 
 class LobbyBook:
@@ -132,6 +147,10 @@ class LobbyBook:
         if code is None:
             return None
         lobby = self._lobbies[code]
+        if lobby.started:
+            lobby.departed.update(
+                (player.player_id, player.name) for player in lobby.players if player.player_id == player_id
+            )
         lobby.players = [player for player in lobby.players if player.player_id != player_id]
         if not lobby.players:
             del self._lobbies[code]
@@ -141,6 +160,14 @@ class LobbyBook:
                 player.seat = index
         if lobby.creator_id == player_id:
             lobby.creator_id = lobby.players[0].player_id
+        if lobby.started and lobby.mode == "bomba" and not lobby.finished:
+            survivors = _survivors(lobby)
+            if len(survivors) <= 1:
+                lobby.finished = True
+                lobby.round_over = False
+                lobby.motion_active = False
+                lobby.finish_reason = "survivor" if survivors else "draw"
+                lobby.winner_ids = [player.player_id for player in survivors]
         if lobby.started:
             self._retarget(lobby)
         return code
@@ -151,6 +178,8 @@ class LobbyBook:
             raise LobbyError("Only the creator can start.")
         if lobby.started:
             raise LobbyError("The game has already started.")
+        if lobby.mode == "bomba" and len(lobby.players) < BOMBA_MIN_PLAYERS:
+            raise LobbyError("Bomba needs at least 2 players.")
         count = len(lobby.players)
         for player in lobby.players:
             player.angle = 360 * player.seat / count
@@ -169,7 +198,69 @@ class LobbyBook:
         lobby.pose_y = 0.0
         lobby.pose_heading = 0.0
         lobby.pose_known = True
+        lobby.round_number = 1
+        lobby.round_over = False
+        lobby.regrouped = False
+        lobby.out_ids = None
+        lobby.out_reason = None
+        lobby.departed = {}
+        self._first_target(lobby)
         return lobby.code
+
+    def regroup(self, code: str) -> bool:
+        """After a Bomba knockout, space the survivors evenly and number them again.
+
+        Scores start over. The countdown waits for next_round, so the robot can
+        drive back to the center first.
+        """
+        lobby = self._lobbies.get(code)
+        if lobby is None or lobby.finished or not lobby.round_over or lobby.regrouped:
+            return False
+        survivors = sorted(_survivors(lobby), key=lambda player: player.seat)
+        for player in lobby.players:
+            player.shakes = 0
+            player.accepted_shakes = 0
+            player.pull = 0.0
+            if player.out:
+                player.angle = None
+        for index, player in enumerate(survivors):
+            player.seat = index
+            player.angle = 360 * index / len(survivors)
+        lobby.round_number += 1
+        lobby.regrouped = True
+        lobby.chase_id = None
+        lobby.opens_at = None
+        lobby.ends_at = None
+        lobby.pull_at = None
+        return True
+
+    def next_round(self, code: str) -> bool:
+        """Open the next Bomba round, with a countdown so players can reach their new marks."""
+        lobby = self._lobbies.get(code)
+        if lobby is None or lobby.finished or not lobby.round_over or not lobby.regrouped:
+            return False
+        lobby.round_over = False
+        lobby.regrouped = False
+        lobby.out_ids = None
+        lobby.out_reason = None
+        lobby.opens_at = time.time() + BOMBA_COUNTDOWN_SECONDS
+        lobby.ends_at = lobby.opens_at + ROUND_SECONDS
+        lobby.pull_at = lobby.opens_at
+        self._first_target(lobby)
+        return True
+
+    def between_rounds(self, code: str) -> bool:
+        lobby = self._lobbies.get(code)
+        return lobby is not None and not lobby.finished and lobby.round_over
+
+    def set_homing(self, code: str, active: bool) -> None:
+        lobby = self._lobbies.get(code)
+        if lobby is not None:
+            lobby.homing = active and not lobby.finished
+
+    def mode_of(self, code: str) -> str | None:
+        lobby = self._lobbies.get(code)
+        return None if lobby is None else lobby.mode
 
     def rematch(self, player_id: str) -> str:
         """Reopen a finished lobby under a new code with the same players.
@@ -190,10 +281,11 @@ class LobbyBook:
                 player.player_id,
                 player.name,
                 player.seat,
-                0.0 if player.angle is None else player.angle,
+                player.angle,
                 player.player_id == lobby.chase_id,
             )
             for player in lobby.players
+            if player.angle is not None
         ]
         pose = (lobby.pose_x, lobby.pose_y, lobby.pose_heading, lobby.pose_known)
         del self._lobbies[lobby.code]
@@ -212,14 +304,14 @@ class LobbyBook:
         return code
 
     def set_mode(self, player_id: str, mode: object) -> str:
-        """Choose Chase or Endurance. Only the creator can, and only before the start."""
+        """Choose Chase, Endurance, or Bomba. Only the creator can, and only before the start."""
         lobby = self._lobby_for(player_id)
         if player_id != lobby.creator_id:
             raise LobbyError("Only the creator can choose the mode.")
         if lobby.started:
             raise LobbyError("The game has already started.")
         if mode not in MODES:
-            raise LobbyError("Pick Chase or Endurance.")
+            raise LobbyError("Pick Chase, Endurance, or Bomba.")
         lobby.mode = str(mode)
         return lobby.code
 
@@ -232,7 +324,7 @@ class LobbyBook:
     def record_shakes(self, player_id: str, total: object) -> tuple[str, bool]:
         """Apply a phone's running shake total. Score moves only during the game."""
         lobby = self._lobby_for(player_id)
-        if not lobby.started or lobby.finished:
+        if not _live(lobby):
             return lobby.code, False
         now = time.time()
         if lobby.ends_at is not None and now >= lobby.ends_at + SCORE_GRACE_SECONDS:
@@ -246,6 +338,8 @@ class LobbyBook:
             raise LobbyError("That shake total could not be read.")
         changed = self._decay_to(lobby, now)
         player = next(player for player in lobby.players if player.player_id == player_id)
+        if player.out:
+            return lobby.code, changed
         if total > player.accepted_shakes:
             increase = total - player.accepted_shakes
             if increase <= MAX_SHAKE_JUMP:
@@ -267,13 +361,13 @@ class LobbyBook:
 
     def deadline(self, code: str) -> float | None:
         lobby = self._lobbies.get(code)
-        if lobby is None or lobby.finished:
+        if lobby is None or not _live(lobby) or lobby.ends_at is None:
             return None
         return lobby.ends_at + SCORE_GRACE_SECONDS
 
     def finish_if_due(self, code: str) -> bool:
         lobby = self._lobbies.get(code)
-        if lobby is None or not lobby.started or lobby.finished or lobby.motion_active:
+        if lobby is None or not _live(lobby) or lobby.motion_active:
             return False
         if lobby.ends_at is None or time.time() < lobby.ends_at + SCORE_GRACE_SECONDS:
             return False
@@ -282,12 +376,12 @@ class LobbyBook:
 
     def pull_round_open(self, code: str) -> bool:
         lobby = self._lobbies.get(code)
-        return lobby is not None and lobby.started and not lobby.finished
+        return lobby is not None and _live(lobby)
 
     def decay_pull(self, code: str, now: float | None = None) -> bool:
         """Fade pull up to now. Returns whether the scoreboard changed."""
         lobby = self._lobbies.get(code)
-        if lobby is None or not lobby.started or lobby.finished:
+        if lobby is None or not _live(lobby):
             return False
         moment = time.time() if now is None else now
         if lobby.ends_at is not None:
@@ -300,7 +394,7 @@ class LobbyBook:
     def refill_endurance(self, code: str, now: float | None = None) -> bool:
         """Refill endurance meters up to now. Chase mode does not use them."""
         lobby = self._lobbies.get(code)
-        if lobby is None or lobby.mode != "endurance" or not lobby.started or lobby.finished:
+        if lobby is None or lobby.mode != "endurance" or not _live(lobby):
             return False
         moment = time.time() if now is None else now
         if lobby.opens_at is None or moment < lobby.opens_at:
@@ -350,6 +444,7 @@ class LobbyBook:
             "reason": lobby.finish_reason if lobby.finished else None,
             "creator": viewer_id == lobby.creator_id,
             "mode": lobby.mode,
+            "bomba": bomba_snapshot(lobby),
             "endurance_max": ENDURANCE_MAX,
             "endurance_refill": ENDURANCE_REFILL_PER_SECOND,
             "players": [
@@ -396,6 +491,8 @@ class LobbyBook:
         return changed
 
     def _retarget(self, lobby: Lobby) -> bool:
+        if lobby.mode == "bomba":
+            return self._retarget_lowest(lobby)
         previous = lobby.chase_id
         current = next(
             (
@@ -418,12 +515,37 @@ class LobbyBook:
                 lobby.chase_id = current.player_id
         return lobby.chase_id != previous
 
+    def _first_target(self, lobby: Lobby) -> None:
+        """Nobody has pull yet. Bomba picks a random survivor, so no seat is always first."""
+        lobby.chase_id = None
+        if lobby.mode == "bomba":
+            survivors = _survivors(lobby)
+            if survivors:
+                lobby.chase_id = secrets.choice(survivors).player_id
+        self._retarget(lobby)
+
+    def _retarget_lowest(self, lobby: Lobby) -> bool:
+        """Bomba hunts the survivor with the least pull. Equal pull goes to the lower seat."""
+        previous = lobby.chase_id
+        survivors = _survivors(lobby)
+        if not survivors:
+            lobby.chase_id = None
+            return previous is not None
+        current = next((player for player in survivors if player.player_id == previous), None)
+        lowest = min(survivors, key=lambda player: (player.pull, player.seat))
+        if current is None or lowest.player_id == current.player_id:
+            lobby.chase_id = lowest.player_id
+        else:
+            margin = max(PULL_MARGIN_ABSOLUTE, current.pull * PULL_MARGIN_FRACTION)
+            if lowest.pull <= current.pull - margin:
+                lobby.chase_id = lowest.player_id
+        return lobby.chase_id != previous
+
     def scoring_open(self, code: str) -> bool:
         lobby = self._lobbies.get(code)
         return (
             lobby is not None
-            and lobby.started
-            and not lobby.finished
+            and _live(lobby)
             and lobby.opens_at is not None
             and time.time() >= lobby.opens_at
         )
@@ -441,7 +563,7 @@ class LobbyBook:
         lobby = self._lobbies.get(code)
         return (
             lobby is not None
-            and not lobby.finished
+            and _live(lobby)
             and lobby.ends_at is not None
             and time.time() >= lobby.ends_at
         )
@@ -454,20 +576,23 @@ class LobbyBook:
     def playing_marks(self, code: str) -> list[tuple[str, float, bool]] | None:
         """Seat order of (player id, angle, whether this player is the target)."""
         lobby = self._lobbies.get(code)
-        if lobby is None or not lobby.started or lobby.finished:
+        if lobby is None or not _live(lobby):
             return None
         rows: list[tuple[str, float, bool]] = []
         for player in sorted(lobby.players, key=lambda item: item.seat):
-            if player.angle is None:
+            if player.angle is None or player.out:
                 continue
             rows.append((player.player_id, player.angle, player.player_id == lobby.chase_id))
         return rows
 
     def finish_arrival(self, code: str, player_id: str) -> bool:
         lobby = self._lobbies.get(code)
-        if lobby is None or lobby.finished:
+        if lobby is None or not _live(lobby):
             return False
         self._decay_to(lobby, time.time())
+        if lobby.mode == "bomba":
+            self._knock_out(lobby, [player_id], "arrival")
+            return True
         lobby.finished = True
         lobby.motion_active = False
         lobby.finish_reason = "arrival"
@@ -480,25 +605,47 @@ class LobbyBook:
             return False
         self._decay_to(lobby, time.time())
         lobby.finished = True
+        lobby.round_over = False
+        lobby.homing = False
         lobby.motion_active = False
         lobby.finish_reason = "draw"
         lobby.winner_ids = []
         return True
 
     def _finish_clock(self, lobby: Lobby) -> None:
-        if lobby.finished or lobby.ends_at is None:
+        if not _live(lobby) or lobby.ends_at is None:
             return
         self._decay_to(lobby, lobby.ends_at + SCORE_GRACE_SECONDS)
         self._retarget(lobby)
+        closest = _closest_ids(lobby)
+        if lobby.mode == "bomba" and closest:
+            self._knock_out(lobby, closest, "clock")
+            return
         lobby.finished = True
         lobby.motion_active = False
-        closest = _closest_ids(lobby)
         if not closest:
             lobby.finish_reason = "draw"
             lobby.winner_ids = []
             return
         lobby.finish_reason = "clock"
         lobby.winner_ids = closest
+
+    def _knock_out(self, lobby: Lobby, loser_ids: list[str], reason: str) -> None:
+        """Bomba losers are out. One survivor wins, none is a draw, more play on."""
+        for player in lobby.players:
+            if player.player_id in loser_ids:
+                player.out = True
+        lobby.motion_active = False
+        lobby.out_ids = list(loser_ids)
+        lobby.out_reason = reason
+        survivors = _survivors(lobby)
+        if len(survivors) <= 1:
+            lobby.finished = True
+            lobby.finish_reason = "survivor" if survivors else "draw"
+            lobby.winner_ids = [player.player_id for player in survivors]
+            return
+        lobby.round_over = True
+        lobby.regrouped = False
 
     def _new_code(self) -> str:
         while True:
@@ -525,17 +672,29 @@ def map_marks(lobby: Lobby, viewer_id: str) -> list[dict]:
     for player in lobby.players:
         angle = player.angle
         if angle is None:
+            if lobby.started:
+                continue
             angle = 0.0 if count == 0 else 360 * player.seat / count
-        marks.append(
-            {
-                "seat": player.seat,
-                "name": player.name,
-                "angle": angle,
-                "you": player.player_id == viewer_id,
-                "chased": lobby.started and player.player_id == lobby.chase_id,
-            }
-        )
+        mark = {
+            "seat": player.seat,
+            "name": player.name,
+            "angle": angle,
+            "you": player.player_id == viewer_id,
+            "chased": lobby.started and player.player_id == lobby.chase_id,
+        }
+        if lobby.mode == "bomba":
+            mark["out"] = player.out
+        marks.append(mark)
     return marks
+
+
+def _live(lobby: Lobby) -> bool:
+    """A round is running: started, not over, and not between Bomba rounds."""
+    return lobby.started and not lobby.finished and not lobby.round_over
+
+
+def _survivors(lobby: Lobby) -> list[Player]:
+    return [player for player in lobby.players if not player.out]
 
 
 def _closest_ids(lobby: Lobby) -> list[str]:
@@ -543,7 +702,7 @@ def _closest_ids(lobby: Lobby) -> list[str]:
     best: float | None = None
     winners: list[str] = []
     for player in lobby.players:
-        if player.angle is None:
+        if player.angle is None or player.out:
             continue
         mark_x, mark_y = mark_at(player.angle)
         distance = math.hypot(mark_x - lobby.pose_x, mark_y - lobby.pose_y)
@@ -558,7 +717,7 @@ def _closest_ids(lobby: Lobby) -> list[str]:
 def snapshot_players(lobby: Lobby) -> list[Player]:
     if not lobby.started:
         return lobby.players
-    return sorted(lobby.players, key=lambda player: (-player.pull, player.seat))
+    return sorted(lobby.players, key=lambda player: (player.out, -player.pull, player.seat))
 
 
 def player_snapshot(
@@ -580,22 +739,47 @@ def player_snapshot(
         entry["chased"] = player.player_id == chase_id
         if mode == "endurance":
             entry["endurance"] = round(player.endurance, 2)
+        if mode == "bomba":
+            entry["out"] = player.out
     return entry
 
 
 def leader_names(lobby: Lobby) -> list[str]:
     """Who would win if the clock ran out now: the closest players. Empty outside play."""
-    if not lobby.started or lobby.finished:
+    if not _live(lobby):
         return []
     by_id = {player.player_id: player.name for player in lobby.players}
     return [by_id[player_id] for player_id in _closest_ids(lobby)]
 
 
+def bomba_snapshot(lobby: Lobby) -> dict | None:
+    """Round number and the last knockout, for the phone. None outside Bomba."""
+    if lobby.mode != "bomba":
+        return None
+    by_id = _names(lobby)
+    return {
+        "round": lobby.round_number,
+        "between": lobby.round_over and not lobby.finished,
+        "regrouped": lobby.regrouped,
+        "homing": lobby.homing,
+        "out": [by_id[player_id] for player_id in lobby.out_ids or [] if player_id in by_id],
+        "out_reason": lobby.out_reason,
+        "alive": len(_survivors(lobby)),
+    }
+
+
 def winner_names(lobby: Lobby) -> list[str]:
+    """Winners stay named after they leave the lobby."""
     if not lobby.winner_ids:
         return []
-    by_id = {player.player_id: player.name for player in lobby.players}
+    by_id = _names(lobby)
     return [by_id[player_id] for player_id in lobby.winner_ids if player_id in by_id]
+
+
+def _names(lobby: Lobby) -> dict[str, str]:
+    by_id = dict(lobby.departed)
+    by_id.update((player.player_id, player.name) for player in lobby.players)
+    return by_id
 
 
 def clean_name(name: object) -> str:
