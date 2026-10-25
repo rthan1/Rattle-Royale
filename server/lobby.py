@@ -344,6 +344,7 @@ class LobbyBook:
             "creator": viewer_id == lobby.creator_id,
             "mode": lobby.mode,
             "endurance_max": ENDURANCE_MAX,
+            "endurance_refill": ENDURANCE_REFILL_PER_SECOND,
             "players": [
                 player_snapshot(player, viewer_id, lobby.started, lobby.chase_id, lobby.mode)
                 for player in snapshot_players(lobby)

@@ -215,6 +215,7 @@ class EnduranceTests(unittest.TestCase):
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
         self.assertEqual(book.snapshot(code, ada)["mode"], "chase")
+        self.assertEqual(book.snapshot(code, ada)["endurance_refill"], ENDURANCE_REFILL_PER_SECOND)
         book.set_mode(ada, "endurance")
         self.assertEqual(book.snapshot(code, bea)["mode"], "endurance")
         with self.assertRaises(LobbyError) as caught:

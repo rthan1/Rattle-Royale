@@ -433,10 +433,17 @@ PAGE = """<!DOCTYPE html>
       const showMeter = enduranceMode && message.started && mine && typeof mine.endurance === "number";
       meter.hidden = !showMeter;
       if (showMeter) {
-        const max = message.endurance_max || 5;
-        const fraction = Math.max(0, Math.min(1, mine.endurance / max));
-        document.getElementById("endurance-fill").style.width = (fraction * 100) + "%";
-        document.getElementById("endurance-label").textContent = "Endurance " + Number(mine.endurance).toFixed(1);
+        if (meterRound !== message.opens_at) {
+          meterRound = message.opens_at;
+          meterValue = mine.endurance;
+          meterStamp = performance.now();
+        }
+        watchEndurance();
+      } else if (meterFrame !== null) {
+        cancelAnimationFrame(meterFrame);
+        meterFrame = null;
+        meterValue = null;
+        meterRound = null;
       }
       document.getElementById("start").hidden = !(message.creator && !message.started);
       document.getElementById("rematch").hidden = !(message.creator && message.finished);
@@ -574,6 +581,67 @@ PAGE = """<!DOCTYPE html>
     let shakeCount = 0;
     let shaking = false;
     let lastShakeAt = 0;
+    let meterValue = null;
+    let meterStamp = 0;
+    let meterFrame = null;
+    let meterRound = null;
+
+    function meterMax() {
+      return lobbyMessage && lobbyMessage.endurance_max ? lobbyMessage.endurance_max : 5;
+    }
+
+    function meterRate() {
+      return lobbyMessage && lobbyMessage.endurance_refill ? lobbyMessage.endurance_refill : 0;
+    }
+
+    function roundIsOpen() {
+      return roundOpensAt !== null && Date.now() >= roundOpensAt
+        && (roundEndsAt === null || Date.now() < roundEndsAt);
+    }
+
+    function enduranceNow() {
+      if (meterValue === null) {
+        return 0;
+      }
+      const now = performance.now();
+      if (roundIsOpen() && meterValue < meterMax()) {
+        const elapsed = Math.max(0, (now - meterStamp) / 1000);
+        meterValue = Math.min(meterMax(), meterValue + meterRate() * elapsed);
+      }
+      meterStamp = now;
+      return meterValue;
+    }
+
+    function paintEndurance() {
+      const current = enduranceNow();
+      const fraction = Math.max(0, Math.min(1, current / meterMax()));
+      document.getElementById("endurance-fill").style.width = (fraction * 100) + "%";
+      document.getElementById("endurance-label").textContent = "Endurance " + current.toFixed(1);
+    }
+
+    function stepEndurance() {
+      meterFrame = null;
+      const meter = document.getElementById("endurance");
+      if (meter.hidden || meterValue === null) {
+        return;
+      }
+      paintEndurance();
+      if (roundIsOpen() && enduranceNow() < meterMax() - 0.001) {
+        meterFrame = requestAnimationFrame(stepEndurance);
+      }
+    }
+
+    function watchEndurance() {
+      paintEndurance();
+      if (meterFrame === null && roundIsOpen() && enduranceNow() < meterMax() - 0.001) {
+        meterFrame = requestAnimationFrame(stepEndurance);
+      }
+    }
+
+    function spendEndurance() {
+      meterValue = Math.max(0, enduranceNow() - 1);
+      watchEndurance();
+    }
 
     function resetShakes() {
       shakeCount = 0;
@@ -683,11 +751,8 @@ PAGE = """<!DOCTYPE html>
       if (roundEndsAt !== null && Date.now() >= roundEndsAt) {
         return;
       }
-      if (lobbyMessage && lobbyMessage.mode === "endurance") {
-        const mine = lobbyMessage.players.find((player) => player.you);
-        if (!mine || mine.endurance < 1) {
-          return;
-        }
+      if (lobbyMessage && lobbyMessage.mode === "endurance" && enduranceNow() < 1) {
+        return;
       }
       const reading = event.accelerationIncludingGravity;
       if (!reading || reading.x == null || reading.y == null || reading.z == null) {
@@ -708,10 +773,7 @@ PAGE = """<!DOCTYPE html>
       lastShakeAt = now;
       shakeCount += 1;
       if (lobbyMessage && lobbyMessage.mode === "endurance") {
-        const mine = lobbyMessage.players.find((player) => player.you);
-        if (mine) {
-          mine.endurance = Math.max(0, mine.endurance - 1);
-        }
+        spendEndurance();
       }
       showShakeCount();
       send({ type: "shakes", total: shakeCount });
