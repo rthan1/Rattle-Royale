@@ -145,6 +145,9 @@ PAGE = """<!DOCTYPE html>
     #host-tip { margin: 0 0 0.75rem; color: #ccc; font-size: 0.95rem; }
     #host-tip.offline { color: #ff9a9a; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
+    #open-lobby { margin: 0 0 1.1rem; padding: 0.8rem; border-radius: 0.6rem; background: #1c1c1c; text-align: center; }
+    #open-lobby-code { font-size: 2.6rem; font-weight: bold; letter-spacing: 0.18rem; margin: 0 0 0.2rem; }
+    #open-lobby-label { margin: 0; color: #bbb; font-size: 0.95rem; }
   </style>
 </head>
 <body>
@@ -153,6 +156,10 @@ PAGE = """<!DOCTYPE html>
     <p id="shakes" hidden>Shakes: 0</p>
     <button id="enable-shake" type="button" class="primary">Enable shaking</button>
     <p id="shake-note">Enable shaking to create or join a lobby.</p>
+    <div id="open-lobby" hidden>
+      <p id="open-lobby-code"></p>
+      <p id="open-lobby-label"></p>
+    </div>
     <section id="join" hidden>
       <label for="name">Name</label>
       <input id="name" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
@@ -202,6 +209,8 @@ PAGE = """<!DOCTYPE html>
     let roundEndsAt = null;
     let countdownTimer = null;
     let lobbyMessage = null;
+    let openLobby = null;
+    let suggestedCode = "";
     let audio = null;
 
     function unlockAudio() {
@@ -315,6 +324,30 @@ PAGE = """<!DOCTYPE html>
     function refreshChrome() {
       statusEl.hidden = inLobby && statusEl.textContent === "Connected";
       shakeNoteEl.hidden = inLobby && shaking;
+      showOpenLobby();
+    }
+
+    function showOpenLobby() {
+      const lobby = openLobby;
+      document.getElementById("open-lobby").hidden = inLobby || !lobby;
+      document.getElementById("create").hidden = Boolean(lobby);
+      if (!lobby) {
+        return;
+      }
+      document.getElementById("open-lobby-code").textContent = lobby.code;
+      const label = document.getElementById("open-lobby-label");
+      if (lobby.started) {
+        label.textContent = "A game is running. If the host starts a rematch, its new code shows up here.";
+      } else if (lobby.players >= lobby.max) {
+        label.textContent = "Lobby full: " + lobby.players + " of " + lobby.max + " players";
+      } else {
+        label.textContent = "Open lobby: " + lobby.players + " of " + lobby.max + " players. Enter your name to join.";
+      }
+      const joinable = !lobby.started && lobby.players < lobby.max;
+      if (joinable && (codeEl.value === "" || codeEl.value === suggestedCode)) {
+        codeEl.value = lobby.code;
+        suggestedCode = lobby.code;
+      }
     }
 
     function setStatus(text) {
@@ -1098,6 +1131,9 @@ PAGE = """<!DOCTYPE html>
           setStatus("Connected");
         } else if (message.type === "lobby") {
           showLobby(message);
+        } else if (message.type === "open_lobby") {
+          openLobby = message.lobby;
+          showOpenLobby();
         } else if (message.type === "rematched") {
           showNotice(rematchText(message));
         } else if (message.type === "left") {
