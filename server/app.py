@@ -321,6 +321,23 @@ PAGE = """<!DOCTYPE html>
     });
     robotImage.src = "/robot.svg";
 
+    let pulseFrame = null;
+
+    function wantsPulse(message) {
+      return !reduceMotion && message.started && !message.finished && (message.marks || []).some((mark) => mark.chased);
+    }
+
+    function stepPulse() {
+      pulseFrame = null;
+      if (arenaMessage === null || robotShown === null || !wantsPulse(arenaMessage)) {
+        return;
+      }
+      if (robotGlide === null) {
+        paintArena(arenaMessage, robotShown);
+      }
+      pulseFrame = requestAnimationFrame(stepPulse);
+    }
+
     function samePlace(a, b) {
       return a.x === b.x && a.y === b.y && a.heading === b.heading;
     }
@@ -362,6 +379,10 @@ PAGE = """<!DOCTYPE html>
       if (!message.pose || marks.length === 0) {
         canvas.hidden = true;
         stopGlide();
+        if (pulseFrame !== null) {
+          cancelAnimationFrame(pulseFrame);
+          pulseFrame = null;
+        }
         arenaMessage = null;
         robotShown = null;
         robotRound = null;
@@ -393,6 +414,9 @@ PAGE = """<!DOCTYPE html>
         robotShown.known = target.known;
       }
       paintArena(message, robotShown);
+      if (pulseFrame === null && wantsPulse(message)) {
+        pulseFrame = requestAnimationFrame(stepPulse);
+      }
     }
 
     function paintArena(message, pose) {
@@ -423,6 +447,30 @@ PAGE = """<!DOCTYPE html>
       ctx.strokeStyle = "#2a2a2a";
       ctx.stroke();
       const marks = message.marks || [];
+      const live = message.started && !message.finished;
+      const target = live ? marks.find((mark) => mark.chased && mark.angle != null) : null;
+      if (target) {
+        const aim = target.angle * Math.PI / 180;
+        const spot = point(radius * Math.cos(aim), radius * Math.sin(aim));
+        const from = point(pose.x, pose.y);
+        const wave = reduceMotion ? 0.5 : (Math.sin(performance.now() / 250) + 1) / 2;
+        ctx.save();
+        ctx.strokeStyle = "#e24b4b";
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.7;
+        ctx.setLineDash([6, 6]);
+        ctx.beginPath();
+        ctx.moveTo(from[0], from[1]);
+        ctx.lineTo(spot[0], spot[1]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineWidth = 3;
+        ctx.globalAlpha = 0.25 + 0.5 * (1 - wave);
+        ctx.beginPath();
+        ctx.arc(spot[0], spot[1], 16 + 5 * wave, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
       marks.forEach((mark) => {
         if (mark.angle == null) {
           return;
