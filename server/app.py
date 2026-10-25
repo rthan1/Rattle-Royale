@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import time
+from pathlib import Path
 
 from aiohttp import ClientConnectionError, WSMsgType, web
 
@@ -21,6 +22,7 @@ from server.lobby import PULL_TICK_SECONDS, LobbyBook, LobbyError
 
 HOST = "0.0.0.0"
 PORT = 8080
+ROBOT_IMAGE = Path(__file__).resolve().parent / "static" / "robot.png"
 
 log = logging.getLogger(__name__)
 
@@ -221,6 +223,14 @@ PAGE = """<!DOCTYPE html>
     let robotPoseAt = null;
     let robotGap = GLIDE_DEFAULT_MS;
     let robotFrame = null;
+    const ROBOT_SIZE = 34;
+    const robotImage = new Image();
+    robotImage.addEventListener("load", () => {
+      if (arenaMessage !== null && robotShown !== null) {
+        paintArena(arenaMessage, robotShown);
+      }
+    });
+    robotImage.src = "/robot.png";
 
     function samePlace(a, b) {
       return a.x === b.x && a.y === b.y && a.heading === b.heading;
@@ -338,16 +348,28 @@ PAGE = """<!DOCTYPE html>
         ctx.fillText(String(player.seat), spot[0], spot[1]);
       });
       const robot = point(pose.x, pose.y);
+      const edge = ROBOT_SIZE / 2;
       ctx.save();
       ctx.translate(robot[0], robot[1]);
+      ctx.save();
       ctx.rotate(-pose.heading * Math.PI / 180);
       ctx.beginPath();
-      ctx.moveTo(14, 0);
-      ctx.lineTo(-9, 7);
-      ctx.lineTo(-9, -7);
+      ctx.moveTo(edge + 10, 0);
+      ctx.lineTo(edge + 1, 6);
+      ctx.lineTo(edge + 1, -6);
       ctx.closePath();
       ctx.fillStyle = pose.known ? "#ffc14d" : "#666";
       ctx.fill();
+      ctx.restore();
+      ctx.globalAlpha = pose.known ? 1 : 0.45;
+      if (robotImage.complete && robotImage.naturalWidth > 0) {
+        ctx.drawImage(robotImage, -edge, -edge, ROBOT_SIZE, ROBOT_SIZE);
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, 0, edge - 4, 0, Math.PI * 2);
+        ctx.fillStyle = "#5aa9e6";
+        ctx.fill();
+      }
       ctx.restore();
     }
 
@@ -742,6 +764,7 @@ def create_app() -> web.Application:
     app["bridge"] = Bridge()
     app.on_cleanup.append(close_bridge)
     app.router.add_get("/", index)
+    app.router.add_get("/robot.png", robot_image)
     app.router.add_get("/ws", websocket)
     return app
 
@@ -752,6 +775,10 @@ async def close_bridge(app: web.Application) -> None:
 
 async def index(_request: web.Request) -> web.Response:
     return web.Response(text=PAGE, content_type="text/html", charset="utf-8")
+
+
+async def robot_image(_request: web.Request) -> web.FileResponse:
+    return web.FileResponse(ROBOT_IMAGE)
 
 
 async def websocket(request: web.Request) -> web.WebSocketResponse:
