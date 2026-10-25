@@ -63,7 +63,9 @@ PAGE = """<!DOCTYPE html>
     #clock { font-size: 3.5rem; font-weight: bold; margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
     #clock.ready { color: #ffc14d; }
     #clock.low { color: #ff7a7a; }
-    #result { font-size: 2rem; margin: 0 0 1rem; }
+    #result { font-size: 2.4rem; font-weight: bold; margin: 0 0 0.25rem; }
+    #result.won { color: #7be495; }
+    #result-detail { margin: 0 0 1rem; color: #aaa; }
     #error { min-height: 1.2rem; margin: 0; color: #ffb4b4; text-align: center; }
     #waiting { margin: 0 0 0.9rem; color: #aaa; }
     #lobby { text-align: center; }
@@ -138,6 +140,8 @@ PAGE = """<!DOCTYPE html>
     <section id="lobby" hidden>
       <p id="notice" hidden></p>
       <p id="clock" hidden></p>
+      <p id="result" hidden></p>
+      <p id="result-detail" hidden></p>
       <p id="lobby-code"></p>
       <p id="lobby-count"></p>
       <p id="your-seat"></p>
@@ -146,7 +150,6 @@ PAGE = """<!DOCTYPE html>
       <p id="arena-caption" hidden></p>
       <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
-      <p id="result" hidden></p>
       <button id="start" type="button" hidden>Start game</button>
       <button id="rematch" type="button" hidden>Rematch</button>
       <p id="waiting" hidden>Waiting for the creator to start</p>
@@ -202,20 +205,6 @@ PAGE = """<!DOCTYPE html>
       lobbyEl.hidden = true;
       joinEl.hidden = !shaking;
       keepAwake(false);
-    }
-
-    function winnerText(message) {
-      const winners = message.winners || [];
-      if (message.reason === "draw" || winners.length === 0) {
-        return "Draw";
-      }
-      let text = winners.length === 1 ? winners[0] + " wins" : "Tie: " + winners.join(", ");
-      if (message.reason === "arrival") {
-        text += " — the robot got there";
-      } else if (message.reason === "clock") {
-        text += " — closest when time ran out";
-      }
-      return text;
     }
 
     let showingReady = false;
@@ -515,10 +504,12 @@ PAGE = """<!DOCTYPE html>
       }
       const clock = document.getElementById("clock");
       const result = document.getElementById("result");
+      const resultDetail = document.getElementById("result-detail");
       if (playing) {
         clock.hidden = false;
         result.hidden = true;
         result.textContent = "";
+        resultDetail.hidden = true;
         if (countdownTimer === null || previousOpen !== roundOpensAt || previousEnd !== roundEndsAt) {
           runCountdown();
         }
@@ -529,13 +520,23 @@ PAGE = """<!DOCTYPE html>
         }
         stopCountdown();
         clock.hidden = true;
+        const outcome = resultFor(message, mine);
         result.hidden = false;
-        result.textContent = winnerText(message);
+        result.textContent = outcome.headline;
+        result.classList.toggle("won", outcome.won);
+        resultDetail.hidden = !outcome.detail;
+        resultDetail.textContent = outcome.detail;
+        const finishKey = message.code + ":" + message.ends_at;
+        if (outcome.won && celebrated !== finishKey && navigator.vibrate) {
+          navigator.vibrate([120, 60, 240]);
+        }
+        celebrated = finishKey;
       } else {
         stopCountdown();
         clock.hidden = true;
         result.hidden = true;
         result.textContent = "";
+        resultDetail.hidden = true;
       }
       const list = document.getElementById("players");
       list.replaceChildren();
@@ -549,6 +550,34 @@ PAGE = """<!DOCTYPE html>
       caption.textContent = captionText;
       caption.hidden = document.getElementById("arena").hidden || !captionText;
       keepAwake(message.started && !message.finished);
+    }
+
+    let celebrated = null;
+
+    function resultFor(message, mine) {
+      const winners = message.winners || [];
+      let detail = "";
+      if (message.reason === "arrival") {
+        detail = "The robot reached them";
+      } else if (message.reason === "clock") {
+        detail = winners.length > 1 ? "Tied for closest when time ran out" : "Closest when time ran out";
+      }
+      if (message.reason === "draw" || winners.length === 0) {
+        return { headline: "Draw", detail: "", won: false };
+      }
+      const youWon = Boolean(mine) && winners.includes(mine.name);
+      if (youWon) {
+        if (message.reason === "arrival") {
+          detail = "The robot reached you";
+        }
+        const others = winners.filter((name) => name !== mine.name);
+        if (others.length > 0) {
+          detail = "With " + others.join(" & ") + ", closest when time ran out";
+        }
+        return { headline: others.length > 0 ? "You tied!" : "You won!", detail, won: true };
+      }
+      const headline = winners.length === 1 ? winners[0] + " won" : "Tie: " + winners.join(" & ");
+      return { headline, detail, won: false };
     }
 
     function playerRow(player, started, topPull) {
