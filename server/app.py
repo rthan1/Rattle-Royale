@@ -22,7 +22,7 @@ from server.lobby import PULL_TICK_SECONDS, LobbyBook, LobbyError
 
 HOST = "0.0.0.0"
 PORT = 8080
-ROBOT_IMAGE = Path(__file__).resolve().parent / "static" / "robot.png"
+ROBOT_IMAGE = Path(__file__).resolve().parent / "static" / "robot.svg"
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +225,7 @@ PAGE = """<!DOCTYPE html>
     let robotPoseAt = null;
     let robotGap = GLIDE_DEFAULT_MS;
     let robotFrame = null;
+    const ARENA_SIZE = 320;
     const ROBOT_SIZE = 44;
     const NAME_INSET = 38;
     const NAME_MAX = 10;
@@ -234,7 +235,7 @@ PAGE = """<!DOCTYPE html>
         paintArena(arenaMessage, robotShown);
       }
     });
-    robotImage.src = "/robot.png";
+    robotImage.src = "/robot.svg";
 
     function samePlace(a, b) {
       return a.x === b.x && a.y === b.y && a.heading === b.heading;
@@ -313,7 +314,13 @@ PAGE = """<!DOCTYPE html>
     function paintArena(message, pose) {
       const canvas = document.getElementById("arena");
       const ctx = canvas.getContext("2d");
-      const size = canvas.width;
+      const size = ARENA_SIZE;
+      const pixels = Math.round(size * Math.min(window.devicePixelRatio || 1, 3));
+      if (canvas.width !== pixels) {
+        canvas.width = pixels;
+        canvas.height = pixels;
+      }
+      ctx.setTransform(pixels / size, 0, 0, pixels / size, 0, 0);
       ctx.clearRect(0, 0, size, size);
       const radius = message.mark_radius || 152.4;
       const pad = 36;
@@ -794,7 +801,7 @@ def create_app() -> web.Application:
     app["bridge"] = Bridge()
     app.on_cleanup.append(close_bridge)
     app.router.add_get("/", index)
-    app.router.add_get("/robot.png", robot_image)
+    app.router.add_get("/robot.svg", robot_image)
     app.router.add_get("/ws", websocket)
     return app
 

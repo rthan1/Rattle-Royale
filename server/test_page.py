@@ -7,8 +7,6 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from server.app import create_app
 
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-
 
 class PageTests(unittest.TestCase):
     def test_the_page_loads_the_robot_picture_the_server_serves(self) -> None:
@@ -19,11 +17,11 @@ class PageTests(unittest.TestCase):
         async with TestClient(TestServer(app)) as client:
             page = await client.get("/")
             self.assertEqual(page.status, 200)
-            self.assertIn('robotImage.src = "/robot.png"', await page.text())
-            image = await client.get("/robot.png")
+            self.assertIn('robotImage.src = "/robot.svg"', await page.text())
+            image = await client.get("/robot.svg")
             self.assertEqual(image.status, 200)
-            self.assertEqual(image.headers["Content-Type"], "image/png")
-            self.assertTrue((await image.read()).startswith(PNG_SIGNATURE))
+            self.assertEqual(image.headers["Content-Type"], "image/svg+xml")
+            self.assertTrue((await image.read()).startswith(b"<svg"))
         app["bridge"].close()
 
 
