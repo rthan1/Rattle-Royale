@@ -75,6 +75,7 @@ PAGE = """<!DOCTYPE html>
     #your-seat { font-size: 2rem; margin: 0 0 0.25rem; }
     #your-mark { margin: 0 0 0.35rem; color: #aaa; }
     #chase { font-size: 1.25rem; margin: 0 0 0.75rem; }
+    #arena-caption { font-size: 1.1rem; margin: 0 0 0.4rem; color: #ffc14d; }
     #arena {
       width: 100%;
       height: auto;
@@ -110,6 +111,7 @@ PAGE = """<!DOCTYPE html>
       <p id="your-seat"></p>
       <p id="your-mark"></p>
       <p id="chase" hidden></p>
+      <p id="arena-caption" hidden></p>
       <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
       <p id="clock" hidden></p>
@@ -223,7 +225,9 @@ PAGE = """<!DOCTYPE html>
     let robotPoseAt = null;
     let robotGap = GLIDE_DEFAULT_MS;
     let robotFrame = null;
-    const ROBOT_SIZE = 34;
+    const ROBOT_SIZE = 44;
+    const NAME_INSET = 38;
+    const NAME_MAX = 10;
     const robotImage = new Image();
     robotImage.addEventListener("load", () => {
       if (arenaMessage !== null && robotShown !== null) {
@@ -348,21 +352,22 @@ PAGE = """<!DOCTYPE html>
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(String(mark.seat), spot[0], spot[1]);
+        if (mark.name) {
+          const label = point((radius - NAME_INSET) * Math.cos(radians), (radius - NAME_INSET) * Math.sin(radians));
+          const name = mark.name.length > NAME_MAX ? mark.name.slice(0, NAME_MAX - 1) + "…" : mark.name;
+          ctx.font = "bold 11px sans-serif";
+          ctx.lineJoin = "round";
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "#1c1c1c";
+          ctx.strokeText(name, label[0], label[1]);
+          ctx.fillStyle = mark.you ? "#8ec8ff" : "#dedede";
+          ctx.fillText(name, label[0], label[1]);
+        }
       });
       const robot = point(pose.x, pose.y);
       const edge = ROBOT_SIZE / 2;
       ctx.save();
       ctx.translate(robot[0], robot[1]);
-      ctx.save();
-      ctx.rotate(-pose.heading * Math.PI / 180);
-      ctx.beginPath();
-      ctx.moveTo(edge + 10, 0);
-      ctx.lineTo(edge + 1, 6);
-      ctx.lineTo(edge + 1, -6);
-      ctx.closePath();
-      ctx.fillStyle = pose.known ? "#ffc14d" : "#666";
-      ctx.fill();
-      ctx.restore();
       ctx.globalAlpha = pose.known ? 1 : 0.45;
       if (robotImage.complete && robotImage.naturalWidth > 0) {
         ctx.drawImage(robotImage, -edge, -edge, ROBOT_SIZE, ROBOT_SIZE);
@@ -465,6 +470,29 @@ PAGE = """<!DOCTYPE html>
         list.append(item);
       });
       drawArena(message);
+      const caption = document.getElementById("arena-caption");
+      const captionText = arenaCaption(message, ready);
+      caption.textContent = captionText;
+      caption.hidden = document.getElementById("arena").hidden || !captionText;
+    }
+
+    function arenaCaption(message, ready) {
+      if (message.last_match) {
+        const winners = message.last_match.winners || [];
+        return winners.length === 0 ? "Last match: draw" : "Last match: " + winners.join(" & ") + " won";
+      }
+      if (!message.started || message.finished || ready) {
+        return "";
+      }
+      const leaders = message.leaders || [];
+      if (leaders.length === 0) {
+        return "";
+      }
+      if (leaders.length > 1) {
+        return leaders.length === message.players.length ? "Everyone is tied" : "Tied: " + leaders.join(" & ");
+      }
+      const mine = message.players.find((player) => player.you);
+      return mine && mine.name === leaders[0] ? "You are winning" : leaders[0] + " is winning";
     }
 
     function send(message) {

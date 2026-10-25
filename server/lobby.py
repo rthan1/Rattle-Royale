@@ -54,6 +54,7 @@ class Player:
 @dataclass
 class HeldMark:
     player_id: str
+    name: str
     seat: int
     angle: float
     chased: bool
@@ -74,6 +75,7 @@ class Lobby:
     pose_heading: float = 0.0
     pose_known: bool = True
     held_marks: list[HeldMark] | None = None
+    held_winners: list[str] | None = None
     chase_id: str | None = None
     motion_active: bool = False
     finish_reason: str | None = None
@@ -146,6 +148,7 @@ class LobbyBook:
         now = time.time()
         lobby.started = True
         lobby.held_marks = None
+        lobby.held_winners = None
         lobby.opens_at = now + COUNTDOWN_SECONDS
         lobby.ends_at = lobby.opens_at + ROUND_SECONDS
         lobby.pull_at = lobby.opens_at
@@ -173,6 +176,7 @@ class LobbyBook:
         held = [
             HeldMark(
                 player.player_id,
+                player.name,
                 player.seat,
                 0.0 if player.angle is None else player.angle,
                 player.player_id == lobby.chase_id,
@@ -181,7 +185,7 @@ class LobbyBook:
         ]
         pose = (lobby.pose_x, lobby.pose_y, lobby.pose_heading, lobby.pose_known)
         del self._lobbies[lobby.code]
-        opened = Lobby(code, lobby.creator_id, players, held_marks=held)
+        opened = Lobby(code, lobby.creator_id, players, held_marks=held, held_winners=winner_names(lobby))
         opened.pose_x, opened.pose_y, opened.pose_heading, opened.pose_known = pose
         self._lobbies[code] = opened
         for player in players:
@@ -278,6 +282,8 @@ class LobbyBook:
                 "known": lobby.pose_known,
             },
             "marks": map_marks(lobby, viewer_id),
+            "last_match": None if lobby.held_marks is None else {"winners": lobby.held_winners or []},
+            "leaders": leader_names(lobby),
             "winners": winner_names(lobby) if lobby.finished else [],
             "reason": lobby.finish_reason if lobby.finished else None,
             "creator": viewer_id == lobby.creator_id,
@@ -428,6 +434,7 @@ def map_marks(lobby: Lobby, viewer_id: str) -> list[dict]:
         return [
             {
                 "seat": mark.seat,
+                "name": mark.name,
                 "angle": mark.angle,
                 "you": mark.player_id == viewer_id,
                 "chased": mark.chased,
@@ -443,6 +450,7 @@ def map_marks(lobby: Lobby, viewer_id: str) -> list[dict]:
         marks.append(
             {
                 "seat": player.seat,
+                "name": player.name,
                 "angle": angle,
                 "you": player.player_id == viewer_id,
                 "chased": lobby.started and player.player_id == lobby.chase_id,
@@ -486,6 +494,14 @@ def player_snapshot(player: Player, viewer_id: str, started: bool, chase_id: str
         entry["pull"] = round(player.pull, 2)
         entry["chased"] = player.player_id == chase_id
     return entry
+
+
+def leader_names(lobby: Lobby) -> list[str]:
+    """Who would win if the clock ran out now: the closest players. Empty outside play."""
+    if not lobby.started or lobby.finished:
+        return []
+    by_id = {player.player_id: player.name for player in lobby.players}
+    return [by_id[player_id] for player_id in _closest_ids(lobby)]
 
 
 def winner_names(lobby: Lobby) -> list[str]:
