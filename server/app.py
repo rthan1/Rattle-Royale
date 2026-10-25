@@ -69,6 +69,7 @@ PAGE = """<!DOCTYPE html>
       margin: 0 0 0.25rem;
     }
     #lobby-count { margin: 0 0 1rem; color: #aaa; }
+    #notice { font-size: 1.15rem; margin: 0 0 1rem; color: #b4e0ff; }
     #your-seat { font-size: 2rem; margin: 0 0 0.25rem; }
     #your-mark { margin: 0 0 0.35rem; color: #aaa; }
     #chase { font-size: 1.25rem; margin: 0 0 0.75rem; }
@@ -101,6 +102,7 @@ PAGE = """<!DOCTYPE html>
       <button id="join-lobby" type="button">Join lobby</button>
     </section>
     <section id="lobby" hidden>
+      <p id="notice" hidden></p>
       <p id="lobby-code"></p>
       <p id="lobby-count"></p>
       <p id="your-seat"></p>
@@ -141,7 +143,19 @@ PAGE = """<!DOCTYPE html>
       }
     }
 
+    function showNotice(text) {
+      const notice = document.getElementById("notice");
+      notice.textContent = text;
+      notice.hidden = !text;
+    }
+
+    function rematchText(message) {
+      const who = message.by ? message.by + " started a rematch." : "Rematch!";
+      return who + " New lobby code: " + message.code;
+    }
+
     function showJoin() {
+      showNotice("");
       stopCountdown();
       showingReady = false;
       playing = false;
@@ -264,6 +278,7 @@ PAGE = """<!DOCTYPE html>
       const nowPlaying = message.started && !message.finished;
       if (nowPlaying && !playing) {
         resetShakes();
+        showNotice("");
       }
       const previousEnd = roundEndsAt;
       const previousOpen = roundOpensAt;
@@ -605,6 +620,8 @@ PAGE = """<!DOCTYPE html>
           statusEl.textContent = "Connected";
         } else if (message.type === "lobby") {
           showLobby(message);
+        } else if (message.type === "rematched") {
+          showNotice(rematchText(message));
         } else if (message.type === "left") {
           inLobby = false;
           showJoin();
@@ -720,6 +737,7 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
                 raise LobbyError("You are not in a lobby.")
             code = book.rematch(player_id)
             log.info("rematch opened as lobby %s", code)
+            await notify(app, code, {"type": "rematched", "code": code, "by": book.creator_name(code)})
             await broadcast(app, code)
         elif kind == "shakes":
             if player_id is None:
@@ -806,6 +824,20 @@ async def broadcast(app: web.Application, code: str) -> None:
             continue
         try:
             await destination.send_str(json.dumps(book.snapshot(code, player_id)))
+        except ClientConnectionError:
+            continue
+
+
+async def notify(app: web.Application, code: str, payload: dict) -> None:
+    """Send the same message to everyone in a lobby."""
+    sockets: dict[str, web.WebSocketResponse] = app["sockets"]
+    text = json.dumps(payload)
+    for player_id in app["book"].member_ids(code):
+        destination = sockets.get(player_id)
+        if destination is None or destination.closed:
+            continue
+        try:
+            await destination.send_str(text)
         except ClientConnectionError:
             continue
 

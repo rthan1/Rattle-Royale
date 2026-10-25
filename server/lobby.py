@@ -153,6 +153,12 @@ class LobbyBook:
             self._membership[player.player_id] = code
         return code
 
+    def creator_name(self, code: str) -> str | None:
+        lobby = self._lobbies.get(code)
+        if lobby is None:
+            return None
+        return next((player.name for player in lobby.players if player.player_id == lobby.creator_id), None)
+
     def record_shakes(self, player_id: str, total: object) -> tuple[str, bool]:
         """Apply a phone's running shake total. Score moves only during the game."""
         lobby = self._lobby_for(player_id)
