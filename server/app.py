@@ -64,7 +64,8 @@ PAGE = """<!DOCTYPE html>
       touch-action: manipulation;
     }
     #clock { font-size: 3.5rem; font-weight: bold; margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
-    #clock.ready { color: #ffc14d; }
+    #clock.ready { color: #ffc14d; font-size: 6rem; line-height: 1.1; }
+    #clock.go { color: #7be495; font-size: 5rem; line-height: 1.1; }
     #clock.low { color: #ff7a7a; }
     #result { font-size: 2.4rem; font-weight: bold; margin: 0 0 0.25rem; }
     #result.won { color: #7be495; }
@@ -190,6 +191,38 @@ PAGE = """<!DOCTYPE html>
     let roundEndsAt = null;
     let countdownTimer = null;
     let lobbyMessage = null;
+    let audio = null;
+
+    function unlockAudio() {
+      try {
+        const Context = window.AudioContext || window.webkitAudioContext;
+        if (!audio && Context) {
+          audio = new Context();
+        }
+        if (audio && audio.state === "suspended") {
+          audio.resume();
+        }
+      } catch (error) {
+        audio = null;
+      }
+    }
+
+    function beep(frequency, ms, volume = 0.15) {
+      if (!audio || audio.state !== "running") {
+        return;
+      }
+      const start = audio.currentTime;
+      const tone = audio.createOscillator();
+      const gain = audio.createGain();
+      tone.frequency.value = frequency;
+      gain.gain.setValueAtTime(volume, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + ms / 1000);
+      tone.connect(gain).connect(audio.destination);
+      tone.start(start);
+      tone.stop(start + ms / 1000);
+    }
+
+    ["touchend", "click"].forEach((kind) => document.addEventListener(kind, unlockAudio, { passive: true }));
 
     function stopCountdown() {
       if (countdownTimer !== null) {
@@ -278,8 +311,14 @@ PAGE = """<!DOCTYPE html>
       refreshChrome();
     }
 
+    const GO_MS = 900;
+    let lastCue = null;
+    let goUntil = null;
+
     function runCountdown() {
       stopCountdown();
+      lastCue = null;
+      goUntil = null;
       const clock = document.getElementById("clock");
       function tick() {
         const now = Date.now();
@@ -288,15 +327,36 @@ PAGE = """<!DOCTYPE html>
         if (ready) {
           showingReady = true;
           clock.classList.remove("low");
-          clock.textContent = String(Math.max(1, Math.ceil((roundOpensAt - now) / 1000)));
+          const count = Math.max(1, Math.ceil((roundOpensAt - now) / 1000));
+          if (count !== lastCue) {
+            lastCue = count;
+            beep(660, 140);
+          }
+          clock.textContent = String(count);
           return;
         }
         if (showingReady && lobbyMessage) {
           showingReady = false;
+          lastCue = null;
+          goUntil = now + GO_MS;
+          beep(990, 450);
+          clock.classList.add("go");
+          clock.textContent = "GO!";
           showLobby(lobbyMessage);
           return;
         }
+        if (goUntil !== null && now < goUntil) {
+          clock.classList.add("go");
+          clock.classList.remove("low");
+          clock.textContent = "GO!";
+          return;
+        }
+        clock.classList.remove("go");
         const left = roundEndsAt === null ? 0 : Math.max(0, Math.ceil((roundEndsAt - now) / 1000));
+        if (left > 0 && left <= 3 && left !== lastCue) {
+          lastCue = left;
+          beep(520, 90, 0.1);
+        }
         clock.classList.toggle("low", left <= LOW_TIME_SECONDS);
         clock.textContent = left + "s";
         if (left <= 0) {
@@ -617,8 +677,11 @@ PAGE = """<!DOCTYPE html>
         resultDetail.hidden = !outcome.detail;
         resultDetail.textContent = outcome.detail;
         const finishKey = message.code + ":" + message.ends_at;
-        if (outcome.won && celebrated !== finishKey && navigator.vibrate) {
-          navigator.vibrate([120, 60, 240]);
+        if (celebrated !== finishKey) {
+          beep(outcome.won ? 880 : 300, 500);
+          if (outcome.won && navigator.vibrate) {
+            navigator.vibrate([120, 60, 240]);
+          }
         }
         celebrated = finishKey;
       } else {
