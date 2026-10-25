@@ -170,6 +170,7 @@ PAGE = """<!DOCTYPE html>
       shakesEl.hidden = true;
       lobbyEl.hidden = true;
       joinEl.hidden = !shaking;
+      keepAwake(false);
     }
 
     function winnerText(message) {
@@ -187,6 +188,46 @@ PAGE = """<!DOCTYPE html>
     }
 
     let showingReady = false;
+
+    let wakeLock = null;
+    let wakeWanted = false;
+    let wakePending = false;
+
+    async function keepAwake(on) {
+      wakeWanted = on;
+      if (!on) {
+        const lock = wakeLock;
+        wakeLock = null;
+        if (lock) {
+          try {
+            await lock.release();
+          } catch (error) {
+            return;
+          }
+        }
+        return;
+      }
+      if (wakeLock || wakePending || !("wakeLock" in navigator) || document.visibilityState !== "visible") {
+        return;
+      }
+      wakePending = true;
+      try {
+        const lock = await navigator.wakeLock.request("screen");
+        lock.addEventListener("release", () => {
+          if (wakeLock === lock) {
+            wakeLock = null;
+          }
+        });
+        wakeLock = lock;
+        if (!wakeWanted) {
+          keepAwake(false);
+        }
+      } catch (error) {
+        wakeLock = null;
+      } finally {
+        wakePending = false;
+      }
+    }
 
     function runCountdown() {
       stopCountdown();
@@ -481,6 +522,7 @@ PAGE = """<!DOCTYPE html>
       const captionText = arenaCaption(message, ready);
       caption.textContent = captionText;
       caption.hidden = document.getElementById("arena").hidden || !captionText;
+      keepAwake(message.started && !message.finished);
     }
 
     function arenaCaption(message, ready) {
@@ -714,6 +756,8 @@ PAGE = """<!DOCTYPE html>
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {
         lastShakeAt = 0;
+      } else if (wakeWanted) {
+        keepAwake(true);
       }
     });
     nameEl.addEventListener("keydown", (event) => {
