@@ -258,6 +258,13 @@ class LobbyBook:
             changed = True
         return changed
 
+    def open_lobby(self) -> dict | None:
+        """The one lobby, as phones outside it see it, or None when there is none."""
+        lobby = next(iter(self._lobbies.values()), None)
+        if lobby is None:
+            return None
+        return {"code": lobby.code, "players": len(lobby.players), "max": MAX_PLAYERS, "started": lobby.started}
+
     def member_ids(self, code: str) -> list[str]:
         lobby = self._lobbies.get(code)
         if lobby is None:

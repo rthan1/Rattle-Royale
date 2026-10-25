@@ -1140,6 +1140,7 @@ def create_app(public_url: str | None = None) -> web.Application:
     app["public_url"] = public_url.rstrip("/") if public_url else None
     app["book"] = LobbyBook()
     app["sockets"] = {}
+    app["watchers"] = set()
     app["bridge"] = Bridge()
     app.on_cleanup.append(close_bridge)
     app.router.add_get("/", index)
@@ -1177,8 +1178,10 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
     peer = request.remote or "unknown"
     player_id: str | None = None
     log.info("phone connected from %s", peer)
+    request.app["watchers"].add(socket)
     try:
         await socket.send_str(json.dumps({"type": "hello"}))
+        await socket.send_str(json.dumps(lobby_notice(request.app)))
         async for message in socket:
             if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED, WSMsgType.ERROR):
                 break
@@ -1186,6 +1189,7 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
                 continue
             player_id = await handle_text(request.app, socket, player_id, message.data)
     finally:
+        request.app["watchers"].discard(socket)
         if player_id is not None:
             await drop_player(request.app, player_id)
         log.info("phone disconnected from %s", peer)
@@ -1246,6 +1250,7 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
                 await drop_player(app, player_id)
                 player_id = None
             await socket.send_str(json.dumps({"type": "left"}))
+            await socket.send_str(json.dumps(lobby_notice(app)))
         else:
             await send_error(socket, "That request was not recognized.")
     except LobbyError as error:
@@ -1309,6 +1314,29 @@ async def drop_player(app: web.Application, player_id: str) -> None:
     code = app["book"].leave(player_id)
     if code is not None:
         await broadcast(app, code)
+    else:
+        await announce(app)
+
+
+def lobby_notice(app: web.Application) -> dict:
+    return {"type": "open_lobby", "lobby": app["book"].open_lobby()}
+
+
+async def announce(app: web.Application) -> None:
+    """Tell phones that are not in the lobby about it, when its code, size, or state changes."""
+    notice = lobby_notice(app)
+    if notice == app.get("announced"):
+        return
+    app["announced"] = notice
+    members = set(app["sockets"].values())
+    text = json.dumps(notice)
+    for destination in list(app["watchers"]):
+        if destination in members or destination.closed:
+            continue
+        try:
+            await destination.send_str(text)
+        except ClientConnectionError:
+            continue
 
 
 async def broadcast(app: web.Application, code: str) -> None:
@@ -1325,6 +1353,7 @@ async def broadcast(app: web.Application, code: str) -> None:
             await destination.send_str(json.dumps(snapshot))
         except ClientConnectionError:
             continue
+    await announce(app)
 
 
 async def notify(app: web.Application, code: str, payload: dict) -> None:
