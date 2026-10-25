@@ -7,10 +7,12 @@ open lobby instead of adding another.
 Each player gets a seat on a circle. Seats pack until the round starts, then
 lock, and each seat keeps the angle it had at the start. The creator can start
 a chase. A 3-second countdown runs first, and shakes during it do not count.
-The chase itself is 45 seconds. Each accepted shake adds pull that fades, and
-the chase target is the player the robot follows. The player whose mark the
-robot reaches wins. If the clock runs out first, the closest player wins, and
-players at the same distance tie.
+The chase itself is 45 seconds. The creator picks Chase or Endurance before
+the start. Chase counts every shake. Endurance spends a meter that refills
+during the round, and a shake with an empty meter does not score. Each
+accepted shake adds pull that fades, and the chase target is the player the
+robot follows. The player whose mark the robot reaches wins. If the clock
+runs out first, the closest player wins, and players at the same distance tie.
 """
 
 import math
@@ -30,6 +32,10 @@ PULL_TICK_SECONDS = 0.25
 PULL_MARGIN_FRACTION = 0.15
 PULL_MARGIN_ABSOLUTE = 1.0
 PULL_FLOOR = 0.05
+ENDURANCE_MAX = 5.0
+ENDURANCE_PER_SHAKE = 1.0
+ENDURANCE_REFILL_PER_SECOND = 0.4
+MODES = ("chase", "endurance")
 CODE_LENGTH = 4
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -49,6 +55,8 @@ class Player:
     seat: int = 0
     angle: float | None = None
     pull: float = 0.0
+    endurance: float = ENDURANCE_MAX
+    endurance_at: float | None = None
 
 
 @dataclass
@@ -78,6 +86,7 @@ class Lobby:
     motion_active: bool = False
     finish_reason: str | None = None
     winner_ids: list[str] | None = None
+    mode: str = "chase"
 
 
 class LobbyBook:
@@ -149,6 +158,9 @@ class LobbyBook:
         lobby.opens_at = now + COUNTDOWN_SECONDS
         lobby.ends_at = lobby.opens_at + ROUND_SECONDS
         lobby.pull_at = lobby.opens_at
+        for player in lobby.players:
+            player.endurance = ENDURANCE_MAX
+            player.endurance_at = lobby.opens_at
         lobby.chase_id = None
         lobby.pose_x = 0.0
         lobby.pose_y = 0.0
@@ -181,12 +193,24 @@ class LobbyBook:
         ]
         pose = (lobby.pose_x, lobby.pose_y, lobby.pose_heading, lobby.pose_known)
         del self._lobbies[lobby.code]
-        opened = Lobby(code, lobby.creator_id, players, held_marks=held)
+        opened = Lobby(code, lobby.creator_id, players, held_marks=held, mode=lobby.mode)
         opened.pose_x, opened.pose_y, opened.pose_heading, opened.pose_known = pose
         self._lobbies[code] = opened
         for player in players:
             self._membership[player.player_id] = code
         return code
+
+    def set_mode(self, player_id: str, mode: object) -> str:
+        """Choose Chase or Endurance. Only the creator can, and only before the start."""
+        lobby = self._lobby_for(player_id)
+        if player_id != lobby.creator_id:
+            raise LobbyError("Only the creator can choose the mode.")
+        if lobby.started:
+            raise LobbyError("The game has already started.")
+        if mode not in MODES:
+            raise LobbyError("Pick Chase or Endurance.")
+        lobby.mode = str(mode)
+        return lobby.code
 
     def creator_name(self, code: str) -> str | None:
         lobby = self._lobbies.get(code)
@@ -214,10 +238,18 @@ class LobbyBook:
         if total > player.accepted_shakes:
             increase = total - player.accepted_shakes
             if increase <= MAX_SHAKE_JUMP:
+                scored = increase
+                if lobby.mode == "endurance":
+                    self._refill_player(player, now)
+                    scored = min(increase, int(player.endurance // ENDURANCE_PER_SHAKE))
+                    player.endurance -= scored * ENDURANCE_PER_SHAKE
                 player.accepted_shakes = total
-                player.shakes += increase
-                player.pull += increase
-                changed = True
+                if scored:
+                    player.shakes += scored
+                    player.pull += scored
+                    changed = True
+                if lobby.mode == "endurance":
+                    changed = True
         if self._retarget(lobby):
             changed = True
         return lobby.code, changed
@@ -254,6 +286,22 @@ class LobbyBook:
             changed = True
         return changed
 
+    def refill_endurance(self, code: str, now: float | None = None) -> bool:
+        """Refill endurance meters up to now. Chase mode does not use them."""
+        lobby = self._lobbies.get(code)
+        if lobby is None or lobby.mode != "endurance" or not lobby.started or lobby.finished:
+            return False
+        moment = time.time() if now is None else now
+        if lobby.opens_at is None or moment < lobby.opens_at:
+            return False
+        if lobby.ends_at is not None:
+            moment = min(moment, lobby.ends_at + SCORE_GRACE_SECONDS)
+        changed = False
+        for player in lobby.players:
+            if self._refill_player(player, moment):
+                changed = True
+        return changed
+
     def member_ids(self, code: str) -> list[str]:
         lobby = self._lobbies.get(code)
         if lobby is None:
@@ -281,8 +329,10 @@ class LobbyBook:
             "winners": winner_names(lobby) if lobby.finished else [],
             "reason": lobby.finish_reason if lobby.finished else None,
             "creator": viewer_id == lobby.creator_id,
+            "mode": lobby.mode,
+            "endurance_max": ENDURANCE_MAX,
             "players": [
-                player_snapshot(player, viewer_id, lobby.started, lobby.chase_id)
+                player_snapshot(player, viewer_id, lobby.started, lobby.chase_id, lobby.mode)
                 for player in snapshot_players(lobby)
             ],
         }
@@ -308,6 +358,20 @@ class LobbyBook:
                 changed = True
             player.pull = updated
         lobby.pull_at = now
+        return changed
+
+    def _refill_player(self, player: Player, now: float) -> bool:
+        if player.endurance_at is None:
+            player.endurance_at = now
+            return False
+        elapsed = now - player.endurance_at
+        player.endurance_at = now
+        if elapsed <= 0 or player.endurance >= ENDURANCE_MAX:
+            player.endurance = min(player.endurance, ENDURANCE_MAX)
+            return False
+        updated = min(ENDURANCE_MAX, player.endurance + elapsed * ENDURANCE_REFILL_PER_SECOND)
+        changed = updated - player.endurance >= 0.05 or updated == ENDURANCE_MAX
+        player.endurance = updated
         return changed
 
     def _retarget(self, lobby: Lobby) -> bool:
@@ -474,7 +538,13 @@ def snapshot_players(lobby: Lobby) -> list[Player]:
     return sorted(lobby.players, key=lambda player: (-player.pull, player.seat))
 
 
-def player_snapshot(player: Player, viewer_id: str, started: bool, chase_id: str | None) -> dict:
+def player_snapshot(
+    player: Player,
+    viewer_id: str,
+    started: bool,
+    chase_id: str | None,
+    mode: str,
+) -> dict:
     entry = {
         "name": player.name,
         "you": player.player_id == viewer_id,
@@ -485,6 +555,8 @@ def player_snapshot(player: Player, viewer_id: str, started: bool, chase_id: str
         entry["angle"] = player.angle
         entry["pull"] = round(player.pull, 2)
         entry["chased"] = player.player_id == chase_id
+        if mode == "endurance":
+            entry["endurance"] = round(player.endurance, 2)
     return entry
 
 

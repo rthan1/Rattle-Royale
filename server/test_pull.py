@@ -5,10 +5,12 @@ import unittest
 
 from server.lobby import (
     COUNTDOWN_SECONDS,
+    ENDURANCE_REFILL_PER_SECOND,
     PULL_HALF_LIFE_SECONDS,
     ROUND_SECONDS,
     SCORE_GRACE_SECONDS,
     LobbyBook,
+    LobbyError,
 )
 
 
@@ -205,6 +207,65 @@ class PullTests(unittest.TestCase):
         book.record_shakes(ada, 6)
         self.assertEqual(players(book, code, ada)["Ada"]["shakes"], 6)
         self.assertTrue(players(book, code, ada)["Ada"]["chased"])
+
+
+class EnduranceTests(unittest.TestCase):
+    def test_the_creator_picks_the_mode_before_the_start(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        bea, _ = book.join(code, "Bea")
+        self.assertEqual(book.snapshot(code, ada)["mode"], "chase")
+        book.set_mode(ada, "endurance")
+        self.assertEqual(book.snapshot(code, bea)["mode"], "endurance")
+        with self.assertRaises(LobbyError) as caught:
+            book.set_mode(bea, "chase")
+        self.assertEqual(caught.exception.message, "Only the creator can choose the mode.")
+        book.start(ada)
+        with self.assertRaises(LobbyError) as caught:
+            book.set_mode(ada, "chase")
+        self.assertEqual(caught.exception.message, "The game has already started.")
+
+    def test_a_burst_spends_the_meter_and_rest_lets_another_shake_score(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        book.set_mode(ada, "endurance")
+        book.start(ada)
+        wake(book, code)
+        for total in range(1, 6):
+            book.record_shakes(ada, total)
+        row = players(book, code, ada)["Ada"]
+        self.assertEqual(row["shakes"], 5)
+        self.assertEqual(row["pull"], 5)
+        self.assertEqual(row["endurance"], 0)
+        book.record_shakes(ada, 6)
+        self.assertEqual(players(book, code, ada)["Ada"]["shakes"], 5)
+        lobby = book._lobbies[code]
+        lobby.players[0].endurance_at = time.time() - (1 / ENDURANCE_REFILL_PER_SECOND)
+        book.record_shakes(ada, 7)
+        row = players(book, code, ada)["Ada"]
+        self.assertEqual(row["shakes"], 6)
+        self.assertEqual(row["pull"], 6)
+        self.assertEqual(row["endurance"], 0)
+
+    def test_chase_mode_still_counts_every_shake(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        book.start(ada)
+        wake(book, code)
+        for total in range(1, 7):
+            book.record_shakes(ada, total)
+        self.assertEqual(players(book, code, ada)["Ada"]["shakes"], 6)
+        self.assertNotIn("endurance", players(book, code, ada)["Ada"])
+
+    def test_rematch_keeps_the_chosen_mode(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        book.set_mode(ada, "endurance")
+        book.start(ada)
+        book._lobbies[code].ends_at = 0
+        self.assertTrue(book.finish_if_due(code))
+        new_code = book.rematch(ada)
+        self.assertEqual(book.snapshot(new_code, ada)["mode"], "endurance")
 
 
 if __name__ == "__main__":

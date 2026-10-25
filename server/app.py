@@ -4,8 +4,9 @@ A phone can create or join a lobby of up to eight players. Each player gets a
 seat and a floor mark. The creator starts the game. A 3-second countdown runs
 before shakes count, so the host cannot start early. The page draws the arena
 and the robot pose from the server. Shakes then add pull, and the robot creeps
-toward the leader when the Arduino is online. Reaching a mark wins. If time
-runs out, the closest player wins.
+toward the leader when the Arduino is online. The creator can pick Endurance
+instead, where each shake spends a meter that refills during the round.
+Reaching a mark wins. If time runs out, the closest player wins.
 """
 
 import asyncio
@@ -87,6 +88,14 @@ PAGE = """<!DOCTYPE html>
     #players li { padding: 0.35rem 0; }
     #shakes { font-size: 1.6rem; margin: 0 0 0.4rem; text-align: center; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
+    #modes { display: flex; gap: 0.5rem; margin: 0 0 0.9rem; }
+    #modes button { flex: 1; width: auto; margin: 0; }
+    #modes button.picked { outline: 3px solid #8ec8ff; }
+    #mode-label { margin: 0 0 0.9rem; color: #aaa; }
+    #endurance { margin: 0 0 0.9rem; }
+    #endurance-label { margin: 0 0 0.35rem; color: #aaa; }
+    #endurance-track { height: 1.1rem; background: #2a2a2a; border-radius: 999px; overflow: hidden; }
+    #endurance-fill { height: 100%; width: 0; background: #7dce6a; }
   </style>
 </head>
 <body>
@@ -109,6 +118,15 @@ PAGE = """<!DOCTYPE html>
       <p id="lobby-count"></p>
       <p id="your-seat"></p>
       <p id="your-mark"></p>
+      <div id="modes" hidden>
+        <button id="mode-chase" type="button">Chase</button>
+        <button id="mode-endurance" type="button">Endurance</button>
+      </div>
+      <p id="mode-label" hidden></p>
+      <div id="endurance" hidden>
+        <p id="endurance-label">Endurance</p>
+        <div id="endurance-track"><div id="endurance-fill"></div></div>
+      </div>
       <p id="chase" hidden></p>
       <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
@@ -396,6 +414,25 @@ PAGE = """<!DOCTYPE html>
       document.getElementById("lobby-code").textContent = message.code;
       document.getElementById("lobby-count").textContent =
         message.players.length + " of " + message.max;
+      const mine = message.players.find((player) => player.you);
+      const choosing = Boolean(message.creator && !message.started);
+      const modes = document.getElementById("modes");
+      modes.hidden = !choosing;
+      document.getElementById("mode-chase").classList.toggle("picked", message.mode !== "endurance");
+      document.getElementById("mode-endurance").classList.toggle("picked", message.mode === "endurance");
+      const modeLabel = document.getElementById("mode-label");
+      const enduranceMode = message.mode === "endurance";
+      modeLabel.hidden = choosing || (message.started && enduranceMode);
+      modeLabel.textContent = enduranceMode ? "Endurance" : "Chase";
+      const meter = document.getElementById("endurance");
+      const showMeter = enduranceMode && message.started && mine && typeof mine.endurance === "number";
+      meter.hidden = !showMeter;
+      if (showMeter) {
+        const max = message.endurance_max || 5;
+        const fraction = Math.max(0, Math.min(1, mine.endurance / max));
+        document.getElementById("endurance-fill").style.width = (fraction * 100) + "%";
+        document.getElementById("endurance-label").textContent = "Endurance " + Number(mine.endurance).toFixed(1);
+      }
       document.getElementById("start").hidden = !(message.creator && !message.started);
       document.getElementById("rematch").hidden = !(message.creator && message.finished);
       const waiting = document.getElementById("waiting");
@@ -404,7 +441,6 @@ PAGE = """<!DOCTYPE html>
         ? "Waiting for the creator to start a rematch"
         : "Waiting for the creator to start";
       document.getElementById("leave").hidden = playing;
-      const mine = message.players.find((player) => player.you);
       document.getElementById("your-seat").textContent = mine ? "You are seat " + mine.seat : "";
       document.getElementById("your-mark").textContent = mine ? "Stand on mark " + mine.seat : "";
       const chase = document.getElementById("chase");
@@ -488,6 +524,12 @@ PAGE = """<!DOCTYPE html>
     });
     document.getElementById("start").addEventListener("click", () => {
       send({ type: "start" });
+    });
+    document.getElementById("mode-chase").addEventListener("click", () => {
+      send({ type: "mode", mode: "chase" });
+    });
+    document.getElementById("mode-endurance").addEventListener("click", () => {
+      send({ type: "mode", mode: "endurance" });
     });
     document.getElementById("rematch").addEventListener("click", () => {
       send({ type: "rematch" });
@@ -613,6 +655,12 @@ PAGE = """<!DOCTYPE html>
       if (roundEndsAt !== null && Date.now() >= roundEndsAt) {
         return;
       }
+      if (lobbyMessage && lobbyMessage.mode === "endurance") {
+        const mine = lobbyMessage.players.find((player) => player.you);
+        if (!mine || mine.endurance < 1) {
+          return;
+        }
+      }
       const reading = event.accelerationIncludingGravity;
       if (!reading || reading.x == null || reading.y == null || reading.z == null) {
         shakeNoteEl.textContent = "This phone cannot shake.";
@@ -631,6 +679,12 @@ PAGE = """<!DOCTYPE html>
       }
       lastShakeAt = now;
       shakeCount += 1;
+      if (lobbyMessage && lobbyMessage.mode === "endurance") {
+        const mine = lobbyMessage.players.find((player) => player.you);
+        if (mine) {
+          mine.endurance = Math.max(0, mine.endurance - 1);
+        }
+      }
       showShakeCount();
       send({ type: "shakes", total: shakeCount });
     }
@@ -840,6 +894,11 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
             app.setdefault("round_tasks", {})[code] = asyncio.create_task(finish_when_due(app, code))
             app.setdefault("pull_tasks", {})[code] = asyncio.create_task(fade_pull(app, code))
             app.setdefault("chase_tasks", {})[code] = asyncio.create_task(chase_round(app, code))
+        elif kind == "mode":
+            if player_id is None:
+                raise LobbyError("You are not in a lobby.")
+            code = book.set_mode(player_id, payload.get("mode"))
+            await broadcast(app, code)
         elif kind == "rematch":
             if player_id is None:
                 raise LobbyError("You are not in a lobby.")
@@ -910,7 +969,7 @@ async def fade_pull(app: web.Application, code: str) -> None:
             await asyncio.sleep(PULL_TICK_SECONDS)
             if not book.pull_round_open(code):
                 return
-            if book.decay_pull(code):
+            if book.decay_pull(code) or book.refill_endurance(code):
                 await broadcast(app, code)
     finally:
         app.setdefault("pull_tasks", {}).pop(code, None)
