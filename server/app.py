@@ -120,6 +120,14 @@ PAGE = """<!DOCTYPE html>
     #players .bar span { display: block; height: 100%; background: #ffc14d; }
     #players .num { flex: none; min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; color: #ccc; }
     #shakes { font-size: 1.6rem; margin: 0 0 0.4rem; text-align: center; }
+    #shakes.pulse { animation: shake-pulse 0.25s ease-out; }
+    @keyframes shake-pulse {
+      from { transform: scale(1.25); color: #ffc14d; }
+      to { transform: scale(1); color: inherit; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #shakes.pulse { animation: none; }
+    }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
   </style>
 </head>
@@ -812,6 +820,12 @@ PAGE = """<!DOCTYPE html>
       lastShakeAt = now;
       shakeCount += 1;
       showShakeCount();
+      shakesEl.classList.remove("pulse");
+      void shakesEl.offsetWidth;
+      shakesEl.classList.add("pulse");
+      if (navigator.vibrate) {
+        navigator.vibrate(15);
+      }
       send({ type: "shakes", total: shakeCount });
     }
 
