@@ -62,6 +62,27 @@ class RematchNoticeTests(unittest.TestCase):
         finally:
             app["bridge"].close()
 
+    def test_lobby_messages_say_whether_the_robot_is_online_and_where_to_invite(self) -> None:
+        asyncio.run(self._lobby_extras())
+
+    async def _lobby_extras(self) -> None:
+        app = create_app("https://party.example.test/")
+        socket = FakeSocket()
+        try:
+            await handle_text(app, socket, None, json.dumps({"type": "create", "name": "Ada", "shaking": True}))
+            lobby = socket.sent[-1]
+            self.assertEqual(lobby["type"], "lobby")
+            self.assertIs(lobby["robot_online"], False)
+            self.assertEqual(lobby["public_url"], "https://party.example.test")
+        finally:
+            app["bridge"].close()
+        plain = create_app()
+        try:
+            await handle_text(plain, socket, None, json.dumps({"type": "create", "name": "Bea", "shaking": True}))
+            self.assertIsNone(socket.sent[-1]["public_url"])
+        finally:
+            plain["bridge"].close()
+
     def test_creator_name_follows_the_creator(self) -> None:
         book = LobbyBook()
         ada, code = book.create("Ada")

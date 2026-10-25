@@ -652,6 +652,9 @@ PAGE = """<!DOCTYPE html>
         chase.hidden = true;
         chase.textContent = "";
       }
+      if (message.started && !message.finished && !ready && message.robot_online === false) {
+        chase.textContent = "Robot offline, so it isn't moving";
+      }
       const clock = document.getElementById("clock");
       const result = document.getElementById("result");
       const resultDetail = document.getElementById("result-detail");
@@ -1299,6 +1302,7 @@ async def broadcast(app: web.Application, code: str) -> None:
             continue
         try:
             snapshot = book.snapshot(code, player_id)
+            snapshot["robot_online"] = bool(app["bridge"].online)
             snapshot["public_url"] = app["public_url"]
             await destination.send_str(json.dumps(snapshot))
         except ClientConnectionError:
