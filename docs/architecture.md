@@ -99,7 +99,7 @@ The lobby draws the arena as soon as it exists. The robot starts in the middle, 
 
 The robot picture, `server/static/robot.svg`, is the robot emoji from Twemoji by Twitter, licensed under CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Source: https://github.com/twitter/twemoji
 
-During the countdown and the chase the page asks the phone to keep its screen on (the Screen Wake Lock API), so a short auto-lock does not hide the tab mid-round. It lets go when the result shows or the player leaves, and asks again if the tab comes back into view.
+During the countdown and the chase the page asks the phone to keep its screen on (the Screen Wake Lock API), so a short auto-lock does not hide the tab mid-round. It lets go when the result shows or the player leaves, and asks again if the tab comes back into view. The timer sits at the top of the lobby screen in large type, yellow during “Get ready” and red for the last 10 seconds.
 
 When the round ends, the page shows the winner and whether the robot got there or the clock ran out. A quiet round says draw. The chase line stays on the frozen pull from the end of the round. The leave button is hidden while the 45 seconds are running.
 

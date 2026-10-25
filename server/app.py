@@ -60,7 +60,9 @@ PAGE = """<!DOCTYPE html>
       padding: 0.85rem;
       touch-action: manipulation;
     }
-    #clock { font-size: 2.5rem; margin: 0 0 0.5rem; }
+    #clock { font-size: 3.5rem; font-weight: bold; margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
+    #clock.ready { color: #ffc14d; }
+    #clock.low { color: #ff7a7a; }
     #result { font-size: 2rem; margin: 0 0 1rem; }
     #error { min-height: 1.2rem; margin: 0; color: #ffb4b4; text-align: center; }
     #waiting { margin: 0 0 0.9rem; color: #aaa; }
@@ -106,6 +108,7 @@ PAGE = """<!DOCTYPE html>
     </section>
     <section id="lobby" hidden>
       <p id="notice" hidden></p>
+      <p id="clock" hidden></p>
       <p id="lobby-code"></p>
       <p id="lobby-count"></p>
       <p id="your-seat"></p>
@@ -114,7 +117,6 @@ PAGE = """<!DOCTYPE html>
       <p id="arena-caption" hidden></p>
       <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
-      <p id="clock" hidden></p>
       <p id="result" hidden></p>
       <button id="start" type="button" hidden>Start game</button>
       <button id="rematch" type="button" hidden>Rematch</button>
@@ -188,6 +190,7 @@ PAGE = """<!DOCTYPE html>
     }
 
     let showingReady = false;
+    const LOW_TIME_SECONDS = 10;
 
     let wakeLock = null;
     let wakeWanted = false;
@@ -235,8 +238,10 @@ PAGE = """<!DOCTYPE html>
       function tick() {
         const now = Date.now();
         const ready = roundOpensAt !== null && now < roundOpensAt;
+        clock.classList.toggle("ready", ready);
         if (ready) {
           showingReady = true;
+          clock.classList.remove("low");
           clock.textContent = String(Math.max(1, Math.ceil((roundOpensAt - now) / 1000)));
           return;
         }
@@ -246,6 +251,7 @@ PAGE = """<!DOCTYPE html>
           return;
         }
         const left = roundEndsAt === null ? 0 : Math.max(0, Math.ceil((roundEndsAt - now) / 1000));
+        clock.classList.toggle("low", left <= LOW_TIME_SECONDS);
         clock.textContent = left + "s";
         if (left <= 0) {
           stopCountdown();
