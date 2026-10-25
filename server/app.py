@@ -72,8 +72,8 @@ PAGE = """<!DOCTYPE html>
     button.primary { background: #ffc14d; color: #111; font-weight: bold; }
     button.quiet { background: transparent; color: #bbb; border: 1px solid #444; font-size: 1rem; padding: 0.65rem; }
     #clock { font-size: 3.5rem; font-weight: bold; margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
-    #clock.ready { color: #ffc14d; font-size: 6rem; line-height: 1.1; }
-    #clock.go { color: #7be495; font-size: 5rem; line-height: 1.1; }
+    #clock.ready { color: #ffc14d; font-size: 5rem; line-height: 1.1; }
+    #clock.go { color: #7be495; font-size: 4.5rem; line-height: 1.1; }
     #clock.low { color: #ff7a7a; }
     #result { font-size: 2.4rem; font-weight: bold; margin: 0 0 0.25rem; }
     #result.won { color: #7be495; }
@@ -87,16 +87,20 @@ PAGE = """<!DOCTYPE html>
       margin: 0 0 0.25rem;
     }
     #lobby-count { margin: 0 0 1rem; color: #aaa; }
+    #lobby.compact #lobby-code,
+    #lobby.compact #lobby-count,
+    #lobby.compact #your-seat { display: none; }
     #notice { font-size: 1.15rem; margin: 0 0 1rem; color: #b4e0ff; }
     #your-seat { font-size: 2rem; margin: 0 0 0.25rem; }
     #your-mark { margin: 0 0 0.35rem; color: #aaa; }
     #chase { font-size: 1.25rem; margin: 0 0 0.75rem; }
     #arena-caption { font-size: 1.1rem; margin: 0 0 0.4rem; color: #ffc14d; }
     #arena {
-      width: 100%;
+      width: min(100%, calc(100vh - 17rem));
+      width: min(100%, calc(100dvh - 17rem));
       height: auto;
       display: block;
-      margin: 0 0 1rem;
+      margin: 0 auto 1rem;
       background: #1c1c1c;
       border-radius: 0.5rem;
     }
@@ -141,7 +145,7 @@ PAGE = """<!DOCTYPE html>
       #shakes.pulse { animation: none; }
     }
     #invite { margin: 0 0 1rem; }
-    #invite-qr { display: block; width: 9.25rem; height: 9.25rem; margin: 0 auto 0.6rem; border-radius: 0.4rem; background: #fff; }
+    #invite-qr { display: block; width: 7.5rem; height: 7.5rem; margin: 0 auto 0.6rem; border-radius: 0.4rem; background: #fff; }
     #host-tip { margin: 0 0 0.75rem; color: #ccc; font-size: 0.95rem; }
     #host-tip.offline { color: #ff9a9a; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
@@ -181,14 +185,14 @@ PAGE = """<!DOCTYPE html>
       </div>
       <p id="your-seat"></p>
       <p id="your-mark"></p>
-      <p id="chase" hidden></p>
-      <p id="arena-caption" hidden></p>
-      <canvas id="arena" width="320" height="320" hidden></canvas>
-      <ul id="players"></ul>
       <p id="host-tip" hidden></p>
       <button id="start" type="button" class="primary" hidden>Start game</button>
       <button id="rematch" type="button" class="primary" hidden>Rematch</button>
       <p id="waiting" hidden>Waiting for the creator to start</p>
+      <p id="chase" hidden></p>
+      <p id="arena-caption" hidden></p>
+      <canvas id="arena" width="320" height="320" hidden></canvas>
+      <ul id="players"></ul>
       <button id="leave" type="button" class="quiet">Leave lobby</button>
     </section>
     <p id="error"></p>
@@ -666,6 +670,7 @@ PAGE = """<!DOCTYPE html>
       if (nowPlaying && !playing) {
         resetShakes();
         showNotice("");
+        window.scrollTo(0, 0);
       }
       const previousEnd = roundEndsAt;
       const previousOpen = roundOpensAt;
@@ -677,6 +682,7 @@ PAGE = """<!DOCTYPE html>
       errorEl.textContent = "";
       joinEl.hidden = true;
       lobbyEl.hidden = false;
+      lobbyEl.classList.toggle("compact", message.started);
       document.getElementById("lobby-code").textContent = message.code;
       document.getElementById("lobby-count").textContent =
         message.players.length + " of " + message.max;
@@ -716,7 +722,7 @@ PAGE = """<!DOCTYPE html>
       if (ready) {
         chase.hidden = false;
         chase.textContent = "Get ready";
-      } else if (message.started) {
+      } else if (message.started && !message.finished) {
         const chased = message.players.find((player) => player.chased);
         chase.hidden = false;
         if (!chased) {
