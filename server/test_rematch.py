@@ -83,6 +83,49 @@ class RematchNoticeTests(unittest.TestCase):
         finally:
             plain["bridge"].close()
 
+    def test_phones_outside_the_lobby_are_told_its_code_when_it_changes(self) -> None:
+        asyncio.run(self._open_lobby())
+
+    async def _open_lobby(self) -> None:
+        from server.app import broadcast, drop_player
+
+        app = create_app()
+        book: LobbyBook = app["book"]
+        outsider, ada_socket, bea_socket = FakeSocket(), FakeSocket(), FakeSocket()
+        app["watchers"].update({outsider, ada_socket, bea_socket})
+
+        def notices(socket: FakeSocket) -> list:
+            return [message["lobby"] for message in socket.sent if message["type"] == "open_lobby"]
+
+        try:
+            ada = await handle_text(app, ada_socket, None, json.dumps({"type": "create", "name": "Ada", "shaking": True}))
+            code = ada_socket.sent[-1]["code"]
+            self.assertEqual(notices(outsider)[-1], {"code": code, "players": 1, "max": MAX_PLAYERS, "started": False})
+            self.assertEqual(notices(ada_socket), [])
+            await handle_text(app, bea_socket, None, json.dumps({"type": "join", "name": "Bea", "code": code, "shaking": True}))
+            self.assertEqual(notices(outsider)[-1]["players"], 2)
+            self.assertEqual(notices(bea_socket)[-1]["players"], 1)
+            book.start(ada)
+            await broadcast(app, code)
+            self.assertTrue(notices(outsider)[-1]["started"])
+            count = len(notices(outsider))
+            await broadcast(app, code)
+            await broadcast(app, code)
+            self.assertEqual(len(notices(outsider)), count)
+            book._lobbies[code].ends_at = 0
+            book.finish_if_due(code)
+            await handle_text(app, ada_socket, ada, json.dumps({"type": "rematch"}))
+            rematch = notices(outsider)[-1]
+            self.assertNotEqual(rematch["code"], code)
+            self.assertFalse(rematch["started"])
+            await handle_text(app, bea_socket, book.member_ids(rematch["code"])[1], json.dumps({"type": "leave"}))
+            self.assertEqual(bea_socket.sent[-2]["type"], "left")
+            self.assertEqual(bea_socket.sent[-1], {"type": "open_lobby", "lobby": {**rematch, "players": 1}})
+            await drop_player(app, ada)
+            self.assertIsNone(notices(outsider)[-1])
+        finally:
+            app["bridge"].close()
+
     def test_creator_name_follows_the_creator(self) -> None:
         book = LobbyBook()
         ada, code = book.create("Ada")

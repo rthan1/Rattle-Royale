@@ -73,8 +73,8 @@ PAGE = """<!DOCTYPE html>
     button.primary { background: #ffc14d; color: #111; font-weight: bold; }
     button.quiet { background: transparent; color: #bbb; border: 1px solid #444; font-size: 1rem; padding: 0.65rem; }
     #clock { font-size: 3.5rem; font-weight: bold; margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
-    #clock.ready { color: #ffc14d; font-size: 6rem; line-height: 1.1; }
-    #clock.go { color: #7be495; font-size: 5rem; line-height: 1.1; }
+    #clock.ready { color: #ffc14d; font-size: 5rem; line-height: 1.1; }
+    #clock.go { color: #7be495; font-size: 4.5rem; line-height: 1.1; }
     #clock.low { color: #ff7a7a; }
     #result { font-size: 2.4rem; font-weight: bold; margin: 0 0 0.25rem; }
     #result.won { color: #7be495; }
@@ -88,16 +88,20 @@ PAGE = """<!DOCTYPE html>
       margin: 0 0 0.25rem;
     }
     #lobby-count { margin: 0 0 1rem; color: #aaa; }
+    #lobby.compact #lobby-code,
+    #lobby.compact #lobby-count,
+    #lobby.compact #your-seat { display: none; }
     #notice { font-size: 1.15rem; margin: 0 0 1rem; color: #b4e0ff; }
     #your-seat { font-size: 2rem; margin: 0 0 0.25rem; }
     #your-mark { margin: 0 0 0.35rem; color: #aaa; }
     #chase { font-size: 1.25rem; margin: 0 0 0.75rem; }
     #arena-caption { font-size: 1.1rem; margin: 0 0 0.4rem; color: #ffc14d; }
     #arena {
-      width: 100%;
+      width: min(100%, calc(100vh - 17rem));
+      width: min(100%, calc(100dvh - 17rem));
       height: auto;
       display: block;
-      margin: 0 0 1rem;
+      margin: 0 auto 1rem;
       background: #1c1c1c;
       border-radius: 0.5rem;
     }
@@ -142,7 +146,7 @@ PAGE = """<!DOCTYPE html>
       #shakes.pulse { animation: none; }
     }
     #invite { margin: 0 0 1rem; }
-    #invite-qr { display: block; width: 9.25rem; height: 9.25rem; margin: 0 auto 0.6rem; border-radius: 0.4rem; background: #fff; }
+    #invite-qr { display: block; width: 7.5rem; height: 7.5rem; margin: 0 auto 0.6rem; border-radius: 0.4rem; background: #fff; }
     #host-tip { margin: 0 0 0.75rem; color: #ccc; font-size: 0.95rem; }
     #host-tip.offline { color: #ff9a9a; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
@@ -154,6 +158,9 @@ PAGE = """<!DOCTYPE html>
     #endurance-label { margin: 0 0 0.35rem; color: #aaa; }
     #endurance-track { height: 1.1rem; background: #2a2a2a; border-radius: 999px; overflow: hidden; }
     #endurance-fill { height: 100%; width: 0; background: #7dce6a; }
+    #open-lobby { margin: 0 0 1.1rem; padding: 0.8rem; border-radius: 0.6rem; background: #1c1c1c; text-align: center; }
+    #open-lobby-code { font-size: 2.6rem; font-weight: bold; letter-spacing: 0.18rem; margin: 0 0 0.2rem; }
+    #open-lobby-label { margin: 0; color: #bbb; font-size: 0.95rem; }
   </style>
 </head>
 <body>
@@ -162,6 +169,10 @@ PAGE = """<!DOCTYPE html>
     <p id="shakes" hidden>Shakes: 0</p>
     <button id="enable-shake" type="button" class="primary">Enable shaking</button>
     <p id="shake-note">Enable shaking to create or join a lobby.</p>
+    <div id="open-lobby" hidden>
+      <p id="open-lobby-code"></p>
+      <p id="open-lobby-label"></p>
+    </div>
     <section id="join" hidden>
       <label for="name">Name</label>
       <input id="name" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
@@ -192,14 +203,14 @@ PAGE = """<!DOCTYPE html>
         <p id="endurance-label">Endurance</p>
         <div id="endurance-track"><div id="endurance-fill"></div></div>
       </div>
-      <p id="chase" hidden></p>
-      <p id="arena-caption" hidden></p>
-      <canvas id="arena" width="320" height="320" hidden></canvas>
-      <ul id="players"></ul>
       <p id="host-tip" hidden></p>
       <button id="start" type="button" class="primary" hidden>Start game</button>
       <button id="rematch" type="button" class="primary" hidden>Rematch</button>
       <p id="waiting" hidden>Waiting for the creator to start</p>
+      <p id="chase" hidden></p>
+      <p id="arena-caption" hidden></p>
+      <canvas id="arena" width="320" height="320" hidden></canvas>
+      <ul id="players"></ul>
       <button id="leave" type="button" class="quiet">Leave lobby</button>
     </section>
     <p id="error"></p>
@@ -220,38 +231,67 @@ PAGE = """<!DOCTYPE html>
     let roundEndsAt = null;
     let countdownTimer = null;
     let lobbyMessage = null;
+    let openLobby = null;
+    let suggestedCode = "";
     let audio = null;
+
+    let audioPrimed = false;
 
     function unlockAudio() {
       try {
+        if (navigator.audioSession) {
+          navigator.audioSession.type = "playback";
+        }
         const Context = window.AudioContext || window.webkitAudioContext;
         if (!audio && Context) {
           audio = new Context();
         }
-        if (audio && audio.state === "suspended") {
+        if (!audio) {
+          return;
+        }
+        if (audio.state !== "running") {
           audio.resume();
+        }
+        if (!audioPrimed) {
+          const silence = audio.createBufferSource();
+          silence.buffer = audio.createBuffer(1, 1, audio.sampleRate);
+          silence.connect(audio.destination);
+          silence.start(0);
+          audioPrimed = true;
         }
       } catch (error) {
         audio = null;
       }
     }
 
-    function beep(frequency, ms, volume = 0.15) {
-      if (!audio || audio.state !== "running") {
+    function beep(frequency, ms, volume = 0.4) {
+      if (!audio) {
+        return;
+      }
+      if (audio.state !== "running") {
+        audio.resume().catch(() => {});
         return;
       }
       const start = audio.currentTime;
+      const end = start + ms / 1000;
       const tone = audio.createOscillator();
       const gain = audio.createGain();
+      tone.type = "triangle";
       tone.frequency.value = frequency;
-      gain.gain.setValueAtTime(volume, start);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + ms / 1000);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, end);
       tone.connect(gain).connect(audio.destination);
       tone.start(start);
-      tone.stop(start + ms / 1000);
+      tone.stop(end);
     }
 
     ["touchend", "click"].forEach((kind) => document.addEventListener(kind, unlockAudio, { passive: true }));
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && audio && audio.state !== "running") {
+        audio.resume().catch(() => {});
+      }
+    });
 
     function stopCountdown() {
       if (countdownTimer !== null) {
@@ -333,6 +373,30 @@ PAGE = """<!DOCTYPE html>
     function refreshChrome() {
       statusEl.hidden = inLobby && statusEl.textContent === "Connected";
       shakeNoteEl.hidden = inLobby && shaking;
+      showOpenLobby();
+    }
+
+    function showOpenLobby() {
+      const lobby = openLobby;
+      document.getElementById("open-lobby").hidden = inLobby || !lobby;
+      document.getElementById("create").hidden = Boolean(lobby);
+      if (!lobby) {
+        return;
+      }
+      document.getElementById("open-lobby-code").textContent = lobby.code;
+      const label = document.getElementById("open-lobby-label");
+      if (lobby.started) {
+        label.textContent = "A game is running. If the host starts a rematch, its new code shows up here.";
+      } else if (lobby.players >= lobby.max) {
+        label.textContent = "Lobby full: " + lobby.players + " of " + lobby.max + " players";
+      } else {
+        label.textContent = "Open lobby: " + lobby.players + " of " + lobby.max + " players. Enter your name to join.";
+      }
+      const joinable = !lobby.started && lobby.players < lobby.max;
+      if (joinable && (codeEl.value === "" || codeEl.value === suggestedCode)) {
+        codeEl.value = lobby.code;
+        suggestedCode = lobby.code;
+      }
     }
 
     function setStatus(text) {
@@ -384,7 +448,7 @@ PAGE = """<!DOCTYPE html>
         const left = roundEndsAt === null ? 0 : Math.max(0, Math.ceil((roundEndsAt - now) / 1000));
         if (left > 0 && left <= 3 && left !== lastCue) {
           lastCue = left;
-          beep(520, 90, 0.1);
+          beep(520, 90, 0.3);
         }
         clock.classList.toggle("low", left <= LOW_TIME_SECONDS);
         clock.textContent = left + "s";
@@ -624,6 +688,7 @@ PAGE = """<!DOCTYPE html>
       if (nowPlaying && !playing) {
         resetShakes();
         showNotice("");
+        window.scrollTo(0, 0);
       }
       const previousEnd = roundEndsAt;
       const previousOpen = roundOpensAt;
@@ -635,6 +700,7 @@ PAGE = """<!DOCTYPE html>
       errorEl.textContent = "";
       joinEl.hidden = true;
       lobbyEl.hidden = false;
+      lobbyEl.classList.toggle("compact", message.started);
       document.getElementById("lobby-code").textContent = message.code;
       document.getElementById("lobby-count").textContent =
         message.players.length + " of " + message.max;
@@ -699,7 +765,7 @@ PAGE = """<!DOCTYPE html>
       if (ready) {
         chase.hidden = false;
         chase.textContent = "Get ready";
-      } else if (message.started) {
+      } else if (message.started && !message.finished) {
         const chased = message.players.find((player) => player.chased);
         chase.hidden = false;
         if (!chased) {
@@ -1157,6 +1223,8 @@ PAGE = """<!DOCTYPE html>
       enableShakeEl.hidden = true;
       dismissKeyboard();
       shakeNoteEl.textContent = "Shaking is on.";
+      unlockAudio();
+      setTimeout(() => beep(880, 120), 60);
       if (!inLobby) {
         joinEl.hidden = false;
       }
@@ -1214,6 +1282,9 @@ PAGE = """<!DOCTYPE html>
           setStatus("Connected");
         } else if (message.type === "lobby") {
           showLobby(message);
+        } else if (message.type === "open_lobby") {
+          openLobby = message.lobby;
+          showOpenLobby();
         } else if (message.type === "rematched") {
           showNotice(rematchText(message));
         } else if (message.type === "left") {
@@ -1256,6 +1327,7 @@ def create_app(public_url: str | None = None) -> web.Application:
     app["public_url"] = public_url.rstrip("/") if public_url else None
     app["book"] = LobbyBook()
     app["sockets"] = {}
+    app["watchers"] = set()
     app["bridge"] = Bridge()
     app.on_cleanup.append(close_bridge)
     app.router.add_get("/", index)
@@ -1293,8 +1365,10 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
     peer = request.remote or "unknown"
     player_id: str | None = None
     log.info("phone connected from %s", peer)
+    request.app["watchers"].add(socket)
     try:
         await socket.send_str(json.dumps({"type": "hello"}))
+        await socket.send_str(json.dumps(lobby_notice(request.app)))
         async for message in socket:
             if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED, WSMsgType.ERROR):
                 break
@@ -1302,6 +1376,7 @@ async def websocket(request: web.Request) -> web.WebSocketResponse:
                 continue
             player_id = await handle_text(request.app, socket, player_id, message.data)
     finally:
+        request.app["watchers"].discard(socket)
         if player_id is not None:
             await drop_player(request.app, player_id)
         log.info("phone disconnected from %s", peer)
@@ -1367,6 +1442,7 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
                 await drop_player(app, player_id)
                 player_id = None
             await socket.send_str(json.dumps({"type": "left"}))
+            await socket.send_str(json.dumps(lobby_notice(app)))
         else:
             await send_error(socket, "That request was not recognized.")
     except LobbyError as error:
@@ -1430,6 +1506,29 @@ async def drop_player(app: web.Application, player_id: str) -> None:
     code = app["book"].leave(player_id)
     if code is not None:
         await broadcast(app, code)
+    else:
+        await announce(app)
+
+
+def lobby_notice(app: web.Application) -> dict:
+    return {"type": "open_lobby", "lobby": app["book"].open_lobby()}
+
+
+async def announce(app: web.Application) -> None:
+    """Tell phones that are not in the lobby about it, when its code, size, or state changes."""
+    notice = lobby_notice(app)
+    if notice == app.get("announced"):
+        return
+    app["announced"] = notice
+    members = set(app["sockets"].values())
+    text = json.dumps(notice)
+    for destination in list(app["watchers"]):
+        if destination in members or destination.closed:
+            continue
+        try:
+            await destination.send_str(text)
+        except ClientConnectionError:
+            continue
 
 
 async def broadcast(app: web.Application, code: str) -> None:
@@ -1446,6 +1545,7 @@ async def broadcast(app: web.Application, code: str) -> None:
             await destination.send_str(json.dumps(snapshot))
         except ClientConnectionError:
             continue
+    await announce(app)
 
 
 async def notify(app: web.Application, code: str, payload: dict) -> None:
