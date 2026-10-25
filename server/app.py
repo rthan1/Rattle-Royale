@@ -61,8 +61,16 @@ PAGE = """<!DOCTYPE html>
       width: 100%;
       margin: 0 0 0.9rem;
       padding: 0.85rem;
+      border: none;
+      border-radius: 0.6rem;
+      background: #2c2c2c;
+      color: #f4f4f4;
       touch-action: manipulation;
+      cursor: pointer;
     }
+    button:active { transform: scale(0.98); }
+    button.primary { background: #ffc14d; color: #111; font-weight: bold; }
+    button.quiet { background: transparent; color: #bbb; border: 1px solid #444; font-size: 1rem; padding: 0.65rem; }
     #clock { font-size: 3.5rem; font-weight: bold; margin: 0 0 0.5rem; font-variant-numeric: tabular-nums; }
     #clock.ready { color: #ffc14d; font-size: 6rem; line-height: 1.1; }
     #clock.go { color: #7be495; font-size: 5rem; line-height: 1.1; }
@@ -143,15 +151,15 @@ PAGE = """<!DOCTYPE html>
   <main>
     <p id="status">Connecting</p>
     <p id="shakes" hidden>Shakes: 0</p>
-    <button id="enable-shake" type="button">Enable shaking</button>
+    <button id="enable-shake" type="button" class="primary">Enable shaking</button>
     <p id="shake-note">Enable shaking to create or join a lobby.</p>
     <section id="join" hidden>
       <label for="name">Name</label>
       <input id="name" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
-      <button id="create" type="button">Create lobby</button>
+      <button id="create" type="button" class="primary">Create lobby</button>
       <label for="code">Lobby code</label>
       <input id="code" maxlength="4" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go">
-      <button id="join-lobby" type="button">Join lobby</button>
+      <button id="join-lobby" type="button" class="primary">Join lobby</button>
     </section>
     <section id="lobby" hidden>
       <p id="notice" hidden></p>
@@ -171,10 +179,10 @@ PAGE = """<!DOCTYPE html>
       <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
       <p id="host-tip" hidden></p>
-      <button id="start" type="button" hidden>Start game</button>
-      <button id="rematch" type="button" hidden>Rematch</button>
+      <button id="start" type="button" class="primary" hidden>Start game</button>
+      <button id="rematch" type="button" class="primary" hidden>Rematch</button>
       <p id="waiting" hidden>Waiting for the creator to start</p>
-      <button id="leave" type="button">Leave lobby</button>
+      <button id="leave" type="button" class="quiet">Leave lobby</button>
     </section>
     <p id="error"></p>
   </main>
