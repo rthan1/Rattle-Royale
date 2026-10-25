@@ -5,7 +5,7 @@ seat and a floor mark. The creator starts the game. A 3-second countdown runs
 before shakes count, so the host cannot start early. The page draws the arena
 and the robot pose from the server. Shakes then add pull, and the robot creeps
 toward the leader when the Arduino is online. Reaching a mark wins. If time
-runs out, the chased player wins.
+runs out, the closest player wins.
 """
 
 import asyncio
@@ -179,7 +179,7 @@ PAGE = """<!DOCTYPE html>
       if (message.reason === "arrival") {
         text += " — the robot got there";
       } else if (message.reason === "clock") {
-        text += " — time ran out";
+        text += " — closest when time ran out";
       }
       return text;
     }

@@ -9,13 +9,16 @@ lock, and each seat keeps the angle it had at the start. The creator can start
 a chase. A 3-second countdown runs first, and shakes during it do not count.
 The chase itself is 45 seconds. Each accepted shake adds pull that fades, and
 the chase target is the player the robot follows. The player whose mark the
-robot reaches wins. If the clock runs out first, the chased player wins.
-Nobody shaking is a draw.
+robot reaches wins. If the clock runs out first, the closest player wins, and
+players at the same distance tie.
 """
 
+import math
 import secrets
 import time
 from dataclasses import dataclass
+
+from server.planner import mark_at
 
 MAX_PLAYERS = 8
 COUNTDOWN_SECONDS = 3
@@ -404,12 +407,13 @@ class LobbyBook:
         self._retarget(lobby)
         lobby.finished = True
         lobby.motion_active = False
-        if lobby.chase_id is None:
+        closest = _closest_ids(lobby)
+        if not closest:
             lobby.finish_reason = "draw"
             lobby.winner_ids = []
-        else:
-            lobby.finish_reason = "clock"
-            lobby.winner_ids = [lobby.chase_id]
+            return
+        lobby.finish_reason = "clock"
+        lobby.winner_ids = closest
 
     def _new_code(self) -> str:
         while True:
@@ -445,6 +449,23 @@ def map_marks(lobby: Lobby, viewer_id: str) -> list[dict]:
             }
         )
     return marks
+
+
+def _closest_ids(lobby: Lobby) -> list[str]:
+    """Players whose marks are nearest the robot. Equal distances all count."""
+    best: float | None = None
+    winners: list[str] = []
+    for player in lobby.players:
+        if player.angle is None:
+            continue
+        mark_x, mark_y = mark_at(player.angle)
+        distance = math.hypot(mark_x - lobby.pose_x, mark_y - lobby.pose_y)
+        if best is None or distance < best - 1e-6:
+            best = distance
+            winners = [player.player_id]
+        elif distance <= best + 1e-6:
+            winners.append(player.player_id)
+    return winners
 
 
 def snapshot_players(lobby: Lobby) -> list[Player]:

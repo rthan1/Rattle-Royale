@@ -109,7 +109,7 @@ class PullTests(unittest.TestCase):
         self.assertEqual(bea_row["seat"], 1)
         self.assertTrue(bea_row["chased"])
 
-    def test_pull_freezes_when_the_clock_names_the_chased_player(self) -> None:
+    def test_pull_freezes_when_the_clock_names_the_closest_player(self) -> None:
         book = LobbyBook()
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
@@ -121,6 +121,7 @@ class PullTests(unittest.TestCase):
         lobby.players[0].pull = 8
         lobby.players[1].pull = 2
         lobby.players[1].shakes = 30
+        lobby.pose_x = 100
         lobby.ends_at = time.time() - 10
         lobby.pull_at = lobby.ends_at + SCORE_GRACE_SECONDS - PULL_HALF_LIFE_SECONDS
         self.assertTrue(book.finish_if_due(code))
@@ -132,7 +133,7 @@ class PullTests(unittest.TestCase):
         self.assertEqual(players(book, code, ada)["Ada"]["pull"], 4)
         self.assertFalse(book.pull_round_open(code))
 
-    def test_a_quiet_clock_is_a_draw(self) -> None:
+    def test_a_quiet_clock_names_the_only_player(self) -> None:
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
@@ -141,8 +142,37 @@ class PullTests(unittest.TestCase):
         lobby.ends_at = time.time() - 10
         self.assertTrue(book.finish_if_due(code))
         snapshot = book.snapshot(code, ada)
-        self.assertEqual(snapshot["reason"], "draw")
-        self.assertEqual(snapshot["winners"], [])
+        self.assertEqual(snapshot["reason"], "clock")
+        self.assertEqual(snapshot["winners"], ["Ada"])
+
+    def test_an_even_clock_ties_the_players_at_the_same_distance(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        book.join(code, "Bea")
+        book.start(ada)
+        wake(book, code)
+        lobby = book._lobbies[code]
+        lobby.ends_at = time.time() - 10
+        self.assertTrue(book.finish_if_due(code))
+        snapshot = book.snapshot(code, ada)
+        self.assertEqual(snapshot["reason"], "clock")
+        self.assertEqual(snapshot["winners"], ["Ada", "Bea"])
+
+    def test_the_clock_names_the_closer_player_even_when_someone_else_is_chased(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        book.join(code, "Bea")
+        book.start(ada)
+        wake(book, code)
+        book.record_shakes(ada, 8)
+        lobby = book._lobbies[code]
+        lobby.pose_x = -100
+        lobby.ends_at = time.time() - 10
+        self.assertTrue(book.finish_if_due(code))
+        snapshot = book.snapshot(code, ada)
+        self.assertEqual(snapshot["reason"], "clock")
+        self.assertEqual(snapshot["winners"], ["Bea"])
+        self.assertTrue(players(book, code, ada)["Ada"]["chased"])
 
     def test_a_chunk_in_flight_holds_the_clock(self) -> None:
         book = LobbyBook()

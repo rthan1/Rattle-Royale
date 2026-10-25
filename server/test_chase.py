@@ -131,7 +131,7 @@ class ChaseTests(unittest.TestCase):
         self.assertEqual(robot.commands[0][2], -1)
         self.assertEqual(robot.commands[1][0], "DRIVE")
         self.assertEqual(robot.commands[1][2], 1)
-        self.assertEqual(book.snapshot(code, bea)["winners"], ["Bea"])
+        self.assertEqual(book.snapshot(code, bea)["winners"], ["Ada", "Bea"])
 
     def test_the_clock_sends_nothing_once_it_has_already_run_out(self) -> None:
         book = LobbyBook()
@@ -149,7 +149,7 @@ class ChaseTests(unittest.TestCase):
         self.assertEqual(robot.commands, [])
         snapshot = book.snapshot(code, ada)
         self.assertEqual(snapshot["reason"], "clock")
-        self.assertEqual(snapshot["winners"], ["Bea"])
+        self.assertEqual(snapshot["winners"], ["Ada", "Bea"])
 
     def test_an_offline_robot_still_names_the_chased_player(self) -> None:
         book = LobbyBook()

@@ -1,6 +1,6 @@
 # Rattle Royale architecture
 
-Rattle Royale is a party game for phones, with a two-motor robot on the bench. The running game is a lobby and a 45-second chase. Players open a page from the laptop, enable shaking, and join a lobby of up to 8 people. Each player gets a seat and a floor mark. The creator starts the round. Everyone shakes. The robot creeps toward whoever is shaking now. Reaching a mark wins. If the clock runs out first, the chased player wins. Nobody shaking is a draw.
+Rattle Royale is a party game for phones, with a two-motor robot on the bench. The running game is a lobby and a 45-second chase. Players open a page from the laptop, enable shaking, and join a lobby of up to 8 people. Each player gets a seat and a floor mark. The creator starts the round. Everyone shakes. The robot creeps toward whoever is shaking now. Reaching a mark wins. If the clock runs out first, the closest player wins, and players at the same distance tie.
 
 During that round the server keeps a fading pull score and, when the Arduino is online, sends one short spin or drive at a time toward that player. Every phone shows the name. `server/bridge.py` opens the Arduino port. If `RATTLE_PORT` is unset, the round still runs and the robot stays still.
 
@@ -50,7 +50,7 @@ The robot hardware is two 28BYJ-48 steppers, each on its own ULN2003 driver. `fi
 2. They enter a name and either create a lobby or join with a 4-character code. The lobby lists every name and seat, and it draws the arena. The robot is in the middle. Each current player is a mark on the circle, and those marks move when someone joins or leaves.
 3. The creator taps **Start game**. Seats lock, and each seat gets the angle it will keep for the round. A 3-second countdown runs. Shakes during it do not count, and the robot stays still. The host places the robot on the center mark, pointed at seat 0, before this.
 4. When the countdown hits zero, the 45-second chase begins. Shakes add to that player’s score only while it is running. The same shakes add pull. Pull fades while the round is open, and the phone with the strongest pull is the one the robot chases. The list on every phone shows the same scores and pull. The personal shake total is hidden on the join screen and appears once the chase has begun. The arena keeps drawing, now from the pose the server reports after each chunk.
-5. The round ends when the robot’s pose comes within 25 mm of a mark, or when the clock runs out. Arrival names that player. The clock names the chased player, or a draw when nobody has pull. The page says which one happened. The leave button is hidden during the 45 seconds and comes back with the result.
+5. The round ends when the robot’s pose comes within 25 mm of a mark, or when the clock runs out. Arrival names that player. The clock names the closest player, or everyone tied for closest. The page says which one happened. The leave button is hidden during the 45 seconds and comes back with the result.
 6. Leaving the lobby removes that player and sets their phone’s shake count back to 0. After the result, the creator can tap **Rematch**. Everyone still there moves to a fresh lobby under a new code, with scores and seats reset, and new players can join with that code before the next start. The arena stays on the result of the round that just ended, robot included, until that next start puts the robot back in the middle and lays the marks out for whoever is there.
 
 One player is enough to start. The creator is the person who created the lobby. If they leave and someone is still in it, the next person in the list becomes the creator.
@@ -211,7 +211,7 @@ The running round counts down for 3 seconds, chases for 45 seconds, draws the ar
 3. The shake window opens and the robot starts moving. Each phone’s shakes add pull. Pull fades if that person stops, so the robot follows current effort.
 4. The planner picks the player with the strongest pull and sends a short spin or a short drive toward that player’s mark. When the chunk finishes, it looks at the scores again and sends the next chunk.
 5. If someone overtakes the leader, the next chunk aims at the new leader. The robot visibly changes direction in the middle of the round.
-6. The round ends in one of two ways. The robot’s pose comes within the arrival radius of a mark, and that player wins. Or the clock runs out, and the player the robot is chasing wins.
+6. The round ends in one of two ways. The robot’s pose comes within the arrival radius of a mark, and that player wins. Or the clock runs out, and the player closest to the robot wins. Players at the same distance tie.
 7. The result stays on screen. The next round starts from the center again.
 
 While nobody has any pull, the robot holds still. The first shakes are what get it moving.
@@ -325,7 +325,7 @@ The rate limit exists so a modified client cannot jump from 0 to a huge pull in 
 The server ends the round on the first of these:
 
 - **Arrival.** After a chunk, the planner reports that the pose is inside a player’s arrival radius. That player wins, even if they lost the pull lead on the same tick. The robot already got there.
-- **Clock.** The end timestamp passes. The current chase target wins. If there is no target because nobody shook, the round is a draw and the robot has not moved.
+- **Clock.** The end timestamp passes. The player closest to the robot wins. Players at the same distance tie, including when the robot is still at the center.
 - **Dropped cable.** A move that loses the serial link is a draw, and the stored pose is marked unknown.
 
 The result message includes the winner names, the reason (arrival, clock, or draw), and the final pull values. The room leaves Playing only after the current chunk has finished. The next round stores a fresh home pose after the host places the robot on the center mark.
@@ -396,7 +396,7 @@ A 5° spin is 190 steps, about 0.6 seconds at 3 ms per step. A full 30 mm drive 
 
 Arrival across every mark is in `plan`. That covers a short drive that enters a mark just as the lead changes. `server/chase.py` ends the round on that report and names that player, even if the clock has also run out.
 
-The clock rule is not in the planner. When a chase round exists, the server lets the chunk already in flight finish, then stops. It does not start another move. The server names the current target as the clock winner.
+The clock rule is not in the planner. When a chase round exists, the server lets the chunk already in flight finish, then stops. It does not start another move. The server names the player closest to the stored pose as the clock winner. Players at the same distance tie.
 
 ### Between rounds
 
@@ -508,7 +508,7 @@ The sketch does not know player names, seats, pull, or the round timer. It canno
 - The server adds the increase only while the round is open, including a short grace after zero, and only when the jump is at most 12. That increase is added to both the shake count and the pull.
 - Pull halves every 2.5 seconds and drops to zero below 0.05. The chase target switches only when a challenger leads by at least 1 pull or 15% of the current pull.
 - Zero pull means the phone says the robot is holding still, and the chase sends nothing.
-- Reaching a mark wins, and the page says the robot got there. If the clock runs out first, the chased player wins and the page says time ran out. Nobody shaking is a draw. Pull freezes with the result.
+- Reaching a mark wins, and the page says the robot got there. If the clock runs out first, the closest player wins and the page says they were closest when time ran out. Players at the same distance tie. Pull freezes with the result.
 - Shakes while the tab is hidden are not counted.
 - Shakes before the start and after the countdown reaches zero are not sent.
 - Leaving the lobby resets the phone’s count. A disconnect cannot fill in shakes from the gap.
