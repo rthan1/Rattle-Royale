@@ -2,12 +2,20 @@
 
 import asyncio
 import json
+import time
 import unittest
 
 from server.app import create_app, handle_text
 from server.bridge import BridgeError, MoveResult
 from server.chase import follow
 from server.lobby import LobbyBook
+
+
+def wake(book: LobbyBook, code: str) -> None:
+    lobby = book._lobbies[code]
+    now = time.time()
+    lobby.opens_at = now - 1
+    lobby.pull_at = now
 
 
 class FakeSocket:
@@ -55,6 +63,7 @@ class ChaseTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 4)
         robot = FakeRobot()
         asyncio.run(follow(book, robot, code))
@@ -63,12 +72,15 @@ class ChaseTests(unittest.TestCase):
         self.assertEqual(snapshot["winners"], ["Ada"])
         self.assertGreaterEqual(len(robot.commands), 1)
         self.assertTrue(all(command == "DRIVE" and direction == -1 for command, _, direction in robot.commands))
+        self.assertGreater(snapshot["pose"]["x"], 120)
+        self.assertTrue(snapshot["pose"]["known"])
 
     def test_the_opposite_player_is_a_string_of_reverse_drives(self) -> None:
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.join(code, "Bea")
         book.start(ada)
+        wake(book, code)
         bea = next(player_id for player_id in book.member_ids(code) if player_id != ada)
         book.record_shakes(bea, 4)
         robot = FakeRobot()
@@ -84,6 +96,7 @@ class ChaseTests(unittest.TestCase):
         for name in ("Bea", "Cam", "Dee", "Eve"):
             book.join(code, name)
         book.start(ada)
+        wake(book, code)
         bea = next(player_id for player_id in book.member_ids(code) if player_id != ada)
         book.record_shakes(bea, 4)
         robot = FakeRobot(book, code)
@@ -100,6 +113,7 @@ class ChaseTests(unittest.TestCase):
         ada, code = book.create("Ada")
         book.join(code, "Bea")
         book.start(ada)
+        wake(book, code)
         bea = next(player_id for player_id in book.member_ids(code) if player_id != ada)
         book.record_shakes(ada, 4)
         robot = FakeRobot(book, code)
@@ -124,6 +138,7 @@ class ChaseTests(unittest.TestCase):
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 2)
         book.record_shakes(bea, 8)
         lobby = book._lobbies[code]
@@ -140,6 +155,7 @@ class ChaseTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 3)
         book._lobbies[code].ends_at = 0
         robot = FakeRobot()
@@ -152,6 +168,7 @@ class ChaseTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 3)
         robot = FakeRobot()
         robot.fail = True
@@ -180,12 +197,19 @@ class ChaseTests(unittest.TestCase):
             )
             code = socket.sent[-1]["code"]
             await handle_text(app, socket, player, json.dumps({"type": "start"}))
+            lobby = app["book"]._lobbies[code]
+            now = time.time()
+            lobby.opens_at = now - 1
+            lobby.pull_at = now
             chase = app["chase_tasks"][code]
             await handle_text(app, socket, player, json.dumps({"type": "shakes", "total": 4}))
             await asyncio.wait_for(chase, 2)
             self.assertEqual(robot.commands[0][0], "DRIVE")
             self.assertEqual(robot.commands[0][2], -1)
-            self.assertTrue(any(message.get("reason") == "arrival" for message in socket.sent))
+            arrived = [message for message in socket.sent if message.get("reason") == "arrival"]
+            self.assertTrue(arrived)
+            self.assertGreater(arrived[-1]["pose"]["x"], 100)
+            self.assertIn("mark_radius", arrived[-1])
         finally:
             if chase is not None and not chase.done():
                 chase.cancel()

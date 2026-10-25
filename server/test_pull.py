@@ -4,10 +4,19 @@ import time
 import unittest
 
 from server.lobby import (
+    COUNTDOWN_SECONDS,
     PULL_HALF_LIFE_SECONDS,
+    ROUND_SECONDS,
     SCORE_GRACE_SECONDS,
     LobbyBook,
 )
+
+
+def wake(book: LobbyBook, code: str) -> None:
+    lobby = book._lobbies[code]
+    now = time.time()
+    lobby.opens_at = now - 1
+    lobby.pull_at = now
 
 
 def players(book: LobbyBook, code: str, viewer_id: str) -> dict[str, dict]:
@@ -21,6 +30,7 @@ class PullTests(unittest.TestCase):
         ada, code = book.create("Ada")
         book.record_shakes(ada, 5)
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 5)
         ada_row = players(book, code, ada)["Ada"]
         self.assertEqual(ada_row["shakes"], 5)
@@ -31,6 +41,7 @@ class PullTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 13)
         ada_row = players(book, code, ada)["Ada"]
         self.assertEqual(ada_row["shakes"], 0)
@@ -45,6 +56,7 @@ class PullTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 1)
         lobby = book._lobbies[code]
         book.decay_pull(code, now=lobby.pull_at + PULL_HALF_LIFE_SECONDS)
@@ -60,6 +72,7 @@ class PullTests(unittest.TestCase):
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 10)
         book.record_shakes(bea, 11)
         rows = players(book, code, ada)
@@ -76,6 +89,7 @@ class PullTests(unittest.TestCase):
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(bea, 8)
         book.record_shakes(ada, 8)
         rows = players(book, code, ada)
@@ -87,6 +101,7 @@ class PullTests(unittest.TestCase):
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 10)
         book.record_shakes(bea, 4)
         book.leave(ada)
@@ -99,6 +114,7 @@ class PullTests(unittest.TestCase):
         ada, code = book.create("Ada")
         bea, _ = book.join(code, "Bea")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 8)
         book.record_shakes(bea, 2)
         lobby = book._lobbies[code]
@@ -120,6 +136,7 @@ class PullTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
+        wake(book, code)
         lobby = book._lobbies[code]
         lobby.ends_at = time.time() - 10
         self.assertTrue(book.finish_if_due(code))
@@ -131,6 +148,7 @@ class PullTests(unittest.TestCase):
         book = LobbyBook()
         ada, code = book.create("Ada")
         book.start(ada)
+        wake(book, code)
         book.record_shakes(ada, 4)
         lobby = book._lobbies[code]
         lobby.ends_at = time.time() - 10
@@ -140,6 +158,23 @@ class PullTests(unittest.TestCase):
         book.set_motion(code, False)
         self.assertTrue(book.finish_if_due(code))
         self.assertEqual(book.snapshot(code, ada)["winners"], ["Ada"])
+
+    def test_shakes_during_the_countdown_do_not_score(self) -> None:
+        book = LobbyBook()
+        ada, code = book.create("Ada")
+        started = time.time()
+        book.start(ada)
+        lobby = book._lobbies[code]
+        self.assertGreaterEqual(lobby.opens_at - started, COUNTDOWN_SECONDS - 0.05)
+        self.assertAlmostEqual(lobby.ends_at - lobby.opens_at, ROUND_SECONDS)
+        book.record_shakes(ada, 6)
+        self.assertEqual(players(book, code, ada)["Ada"]["shakes"], 0)
+        self.assertFalse(players(book, code, ada)["Ada"]["chased"])
+        self.assertEqual(book.snapshot(code, ada)["pose"], {"x": 0.0, "y": 0.0, "heading": 0.0, "known": True})
+        wake(book, code)
+        book.record_shakes(ada, 6)
+        self.assertEqual(players(book, code, ada)["Ada"]["shakes"], 6)
+        self.assertTrue(players(book, code, ada)["Ada"]["chased"])
 
 
 if __name__ == "__main__":

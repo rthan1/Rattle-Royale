@@ -1,9 +1,11 @@
 """Phone connection, lobbies, and a 45-second chase.
 
 A phone can create or join a lobby of up to eight players. Each player gets a
-seat and a floor mark. The creator starts the game. Shakes add pull, and the
-robot creeps toward the leader when the Arduino is online. Reaching a mark
-wins. If time runs out, the chased player wins.
+seat and a floor mark. The creator starts the game. A 3-second countdown runs
+before shakes count, so the host cannot start early. The page draws the arena
+and the robot pose from the server. Shakes then add pull, and the robot creeps
+toward the leader when the Arduino is online. Reaching a mark wins. If time
+runs out, the chased player wins.
 """
 
 import asyncio
@@ -69,7 +71,15 @@ PAGE = """<!DOCTYPE html>
     #lobby-count { margin: 0 0 1rem; color: #aaa; }
     #your-seat { font-size: 2rem; margin: 0 0 0.25rem; }
     #your-mark { margin: 0 0 0.35rem; color: #aaa; }
-    #chase { font-size: 1.25rem; margin: 0 0 1rem; }
+    #chase { font-size: 1.25rem; margin: 0 0 0.75rem; }
+    #arena {
+      width: 100%;
+      height: auto;
+      display: block;
+      margin: 0 0 1rem;
+      background: #1c1c1c;
+      border-radius: 0.5rem;
+    }
     #players { list-style: none; padding: 0; margin: 0 0 1.25rem; font-size: 1.35rem; }
     #players li { padding: 0.35rem 0; }
     #shakes { font-size: 1.6rem; margin: 0 0 0.4rem; text-align: center; }
@@ -96,6 +106,7 @@ PAGE = """<!DOCTYPE html>
       <p id="your-seat"></p>
       <p id="your-mark"></p>
       <p id="chase" hidden></p>
+      <canvas id="arena" width="320" height="320" hidden></canvas>
       <ul id="players"></ul>
       <p id="clock" hidden></p>
       <p id="result" hidden></p>
@@ -117,8 +128,10 @@ PAGE = """<!DOCTYPE html>
     let inLobby = false;
     let playing = false;
     let retryTimer = null;
+    let roundOpensAt = null;
     let roundEndsAt = null;
     let countdownTimer = null;
+    let lobbyMessage = null;
 
     function stopCountdown() {
       if (countdownTimer !== null) {
@@ -129,8 +142,11 @@ PAGE = """<!DOCTYPE html>
 
     function showJoin() {
       stopCountdown();
+      showingReady = false;
       playing = false;
+      roundOpensAt = null;
       roundEndsAt = null;
+      lobbyMessage = null;
       resetShakes();
       shakesEl.hidden = true;
       lobbyEl.hidden = true;
@@ -151,11 +167,25 @@ PAGE = """<!DOCTYPE html>
       return text;
     }
 
-    function runCountdown(endsAt) {
+    let showingReady = false;
+
+    function runCountdown() {
       stopCountdown();
       const clock = document.getElementById("clock");
       function tick() {
-        const left = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+        const now = Date.now();
+        const ready = roundOpensAt !== null && now < roundOpensAt;
+        if (ready) {
+          showingReady = true;
+          clock.textContent = String(Math.max(1, Math.ceil((roundOpensAt - now) / 1000)));
+          return;
+        }
+        if (showingReady && lobbyMessage) {
+          showingReady = false;
+          showLobby(lobbyMessage);
+          return;
+        }
+        const left = roundEndsAt === null ? 0 : Math.max(0, Math.ceil((roundEndsAt - now) / 1000));
         clock.textContent = left + "s";
         if (left <= 0) {
           stopCountdown();
@@ -165,16 +195,82 @@ PAGE = """<!DOCTYPE html>
       countdownTimer = setInterval(tick, 200);
     }
 
+    function drawArena(message) {
+      const canvas = document.getElementById("arena");
+      if (!message.started || !message.pose) {
+        canvas.hidden = true;
+        return;
+      }
+      canvas.hidden = false;
+      const ctx = canvas.getContext("2d");
+      const size = canvas.width;
+      ctx.clearRect(0, 0, size, size);
+      const radius = message.mark_radius || 152.4;
+      const pad = 36;
+      const half = size / 2 - pad;
+      const scale = half / radius;
+      const cx = size / 2;
+      const cy = size / 2;
+      function point(x, y) {
+        return [cx + x * scale, cy - y * scale];
+      }
+      ctx.strokeStyle = "#3a3a3a";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(cx - half, cy - half, half * 2, half * 2);
+      ctx.beginPath();
+      ctx.arc(cx, cy, half, 0, Math.PI * 2);
+      ctx.strokeStyle = "#2a2a2a";
+      ctx.stroke();
+      message.players.forEach((player) => {
+        if (player.angle == null) {
+          return;
+        }
+        const radians = player.angle * Math.PI / 180;
+        const spot = point(radius * Math.cos(radians), radius * Math.sin(radians));
+        ctx.beginPath();
+        ctx.arc(spot[0], spot[1], 12, 0, Math.PI * 2);
+        ctx.fillStyle = player.chased ? "#e24b4b" : "#dedede";
+        ctx.fill();
+        if (player.you) {
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "#8ec8ff";
+          ctx.stroke();
+        }
+        ctx.fillStyle = "#111";
+        ctx.font = "bold 12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(player.seat), spot[0], spot[1]);
+      });
+      const pose = message.pose;
+      const robot = point(pose.x, pose.y);
+      ctx.save();
+      ctx.translate(robot[0], robot[1]);
+      ctx.rotate(-pose.heading * Math.PI / 180);
+      ctx.beginPath();
+      ctx.moveTo(14, 0);
+      ctx.lineTo(-9, 7);
+      ctx.lineTo(-9, -7);
+      ctx.closePath();
+      ctx.fillStyle = pose.known ? "#ffc14d" : "#666";
+      ctx.fill();
+      ctx.restore();
+    }
+
     function showLobby(message) {
       inLobby = true;
+      lobbyMessage = message;
       const nowPlaying = message.started && !message.finished;
       if (nowPlaying && !playing) {
         resetShakes();
       }
       const previousEnd = roundEndsAt;
+      const previousOpen = roundOpensAt;
       playing = nowPlaying;
+      roundOpensAt = message.started ? message.opens_at : null;
       roundEndsAt = message.started ? message.ends_at : null;
-      shakesEl.hidden = !message.started;
+      const ready = roundOpensAt !== null && Date.now() < roundOpensAt;
+      shakesEl.hidden = !message.started || ready;
       errorEl.textContent = "";
       joinEl.hidden = true;
       lobbyEl.hidden = false;
@@ -188,7 +284,10 @@ PAGE = """<!DOCTYPE html>
       document.getElementById("your-seat").textContent = mine ? "You are seat " + mine.seat : "";
       document.getElementById("your-mark").textContent = mine ? "Stand on mark " + mine.seat : "";
       const chase = document.getElementById("chase");
-      if (message.started) {
+      if (ready) {
+        chase.hidden = false;
+        chase.textContent = "Get ready";
+      } else if (message.started) {
         const chased = message.players.find((player) => player.chased);
         chase.hidden = false;
         if (!chased) {
@@ -208,8 +307,8 @@ PAGE = """<!DOCTYPE html>
         clock.hidden = false;
         result.hidden = true;
         result.textContent = "";
-        if (countdownTimer === null || previousEnd !== message.ends_at) {
-          runCountdown(message.ends_at);
+        if (countdownTimer === null || previousOpen !== roundOpensAt || previousEnd !== roundEndsAt) {
+          runCountdown();
         }
       } else if (message.finished) {
         if (mine) {
@@ -241,6 +340,7 @@ PAGE = """<!DOCTYPE html>
         item.textContent = text;
         list.append(item);
       });
+      drawArena(message);
     }
 
     function send(message) {
@@ -378,6 +478,9 @@ PAGE = """<!DOCTYPE html>
 
     function onMotion(event) {
       if (!shaking || !playing || document.visibilityState === "hidden") {
+        return;
+      }
+      if (roundOpensAt !== null && Date.now() < roundOpensAt) {
         return;
       }
       if (roundEndsAt !== null && Date.now() >= roundEndsAt) {
@@ -623,8 +726,13 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
 
 async def chase_round(app: web.Application, code: str) -> None:
     book: LobbyBook = app["book"]
+
+    async def publish() -> None:
+        if book.member_ids(code):
+            await broadcast(app, code)
+
     try:
-        await follow(book, app["bridge"], code)
+        await follow(book, app["bridge"], code, publish)
     except Exception:
         log.exception("lobby %s chase stopped", code)
         book.finish_draw(code)

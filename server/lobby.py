@@ -2,10 +2,11 @@
 
 Each player gets a seat on a circle. Seats pack until the round starts, then
 lock, and each seat keeps the angle it had at the start. The creator can start
-a 45-second chase. During the round, each accepted shake also adds pull that
-fades, and the chase target is the player the robot follows. The player whose
-mark the robot reaches wins. If the clock runs out first, the chased player
-wins. Nobody shaking is a draw.
+a chase. A 3-second countdown runs first, and shakes during it do not count.
+The chase itself is 45 seconds. Each accepted shake adds pull that fades, and
+the chase target is the player the robot follows. The player whose mark the
+robot reaches wins. If the clock runs out first, the chased player wins.
+Nobody shaking is a draw.
 """
 
 import secrets
@@ -13,6 +14,7 @@ import time
 from dataclasses import dataclass
 
 MAX_PLAYERS = 8
+COUNTDOWN_SECONDS = 3
 ROUND_SECONDS = 45
 MAX_SHAKE_JUMP = 12
 SCORE_GRACE_SECONDS = 0.5
@@ -49,8 +51,13 @@ class Lobby:
     players: list[Player]
     started: bool = False
     finished: bool = False
+    opens_at: float | None = None
     ends_at: float | None = None
     pull_at: float | None = None
+    pose_x: float = 0.0
+    pose_y: float = 0.0
+    pose_heading: float = 0.0
+    pose_known: bool = True
     chase_id: str | None = None
     motion_active: bool = False
     finish_reason: str | None = None
@@ -115,10 +122,16 @@ class LobbyBook:
         count = len(lobby.players)
         for player in lobby.players:
             player.angle = 360 * player.seat / count
+        now = time.time()
         lobby.started = True
-        lobby.ends_at = time.time() + ROUND_SECONDS
-        lobby.pull_at = time.time()
+        lobby.opens_at = now + COUNTDOWN_SECONDS
+        lobby.ends_at = lobby.opens_at + ROUND_SECONDS
+        lobby.pull_at = lobby.opens_at
         lobby.chase_id = None
+        lobby.pose_x = 0.0
+        lobby.pose_y = 0.0
+        lobby.pose_heading = 0.0
+        lobby.pose_known = True
         return lobby.code
 
     def record_shakes(self, player_id: str, total: object) -> tuple[str, bool]:
@@ -132,6 +145,8 @@ class LobbyBook:
                 return lobby.code, False
             self._finish_clock(lobby)
             return lobby.code, True
+        if lobby.opens_at is None or now < lobby.opens_at:
+            return lobby.code, False
         if type(total) is not int or total < 0:
             raise LobbyError("That shake total could not be read.")
         changed = self._decay_to(lobby, now)
@@ -193,7 +208,17 @@ class LobbyBook:
             "max": MAX_PLAYERS,
             "started": lobby.started,
             "finished": lobby.finished,
+            "opens_at": None if lobby.opens_at is None else int(lobby.opens_at * 1000),
             "ends_at": None if lobby.ends_at is None else int(lobby.ends_at * 1000),
+            "mark_radius": 152.4,
+            "pose": None
+            if not lobby.started
+            else {
+                "x": lobby.pose_x,
+                "y": lobby.pose_y,
+                "heading": lobby.pose_heading,
+                "known": lobby.pose_known,
+            },
             "winners": winner_names(lobby) if lobby.finished else [],
             "reason": lobby.finish_reason if lobby.finished else None,
             "creator": viewer_id == lobby.creator_id,
@@ -248,6 +273,25 @@ class LobbyBook:
             else:
                 lobby.chase_id = current.player_id
         return lobby.chase_id != previous
+
+    def scoring_open(self, code: str) -> bool:
+        lobby = self._lobbies.get(code)
+        return (
+            lobby is not None
+            and lobby.started
+            and not lobby.finished
+            and lobby.opens_at is not None
+            and time.time() >= lobby.opens_at
+        )
+
+    def remember_pose(self, code: str, x: float, y: float, heading: float, known: bool) -> None:
+        lobby = self._lobbies.get(code)
+        if lobby is None:
+            return
+        lobby.pose_x = x
+        lobby.pose_y = y
+        lobby.pose_heading = heading
+        lobby.pose_known = known
 
     def clock_reached(self, code: str) -> bool:
         lobby = self._lobbies.get(code)

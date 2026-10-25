@@ -18,11 +18,14 @@ log = logging.getLogger(__name__)
 LOOK_AGAIN_SECONDS = 0.05
 
 
-async def follow(book: LobbyBook, robot: object, code: str) -> None:
+async def follow(book: LobbyBook, robot: object, code: str, on_pose=None) -> None:
     """Chase the pull leader until the round ends."""
     pose = Pose()
     told_offline = False
     while book.pull_round_open(code):
+        if not book.scoring_open(code):
+            await asyncio.sleep(LOOK_AGAIN_SECONDS)
+            continue
         rows = book.playing_marks(code)
         if rows is None:
             return
@@ -60,16 +63,19 @@ async def follow(book: LobbyBook, robot: object, code: str) -> None:
                     retry = True
                 else:
                     pose.mark_unknown()
+                    book.remember_pose(code, pose.x, pose.y, pose.heading, False)
                     book.finish_draw(code)
                     log.info("lobby %s drive failed: %s", code, error.message)
                     return
             else:
                 if result.stopped or result.command is None:
                     pose.mark_unknown()
+                    book.remember_pose(code, pose.x, pose.y, pose.heading, False)
                     book.finish_draw(code)
                     log.info("lobby %s move stopped before it finished", code)
                     return
                 pose.apply(result.command, result.steps, result.direction)
+                book.remember_pose(code, pose.x, pose.y, pose.heading, pose.known)
                 log.info(
                     "lobby %s pose x=%.1f y=%.1f heading=%.1f",
                     code,
@@ -78,9 +84,14 @@ async def follow(book: LobbyBook, robot: object, code: str) -> None:
                     pose.heading,
                 )
                 if _declare_arrival(book, pose, code):
-                    return
+                    retry = False
+                    break
         finally:
             book.set_motion(code, False)
+        if on_pose is not None:
+            await on_pose()
+        if not book.pull_round_open(code):
+            return
         if retry:
             await asyncio.sleep(LOOK_AGAIN_SECONDS)
 
