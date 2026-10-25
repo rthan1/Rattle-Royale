@@ -51,7 +51,7 @@ The robot hardware is two 28BYJ-48 steppers, each on its own ULN2003 driver. `fi
 3. The creator taps **Start game**. A 45-second countdown runs from the server’s end time. Seat numbers lock, and each seat gets the angle it will keep for the round. The robot is taken to be at the center, pointed at seat 0.
 4. Shakes add to that player’s score only while the countdown is running. The same shakes add pull. Pull fades while the round is open, and the phone with the strongest pull is the one the robot chases. The list on every phone shows the same scores and pull. The personal shake total is hidden on the join screen and appears once the round has started.
 5. The round ends when the robot’s pose comes within 25 mm of a mark, or when the clock runs out. Arrival names that player. The clock names the chased player, or a draw when nobody has pull. The page says which one happened. The leave button is hidden during the 45 seconds and comes back with the result.
-6. Leaving the lobby removes that player and sets their phone’s shake count back to 0. The same lobby does not start a second round. People create or join again for another game.
+6. Leaving the lobby removes that player and sets their phone’s shake count back to 0. After the result, the creator can tap **Rematch**. Everyone still there moves to a fresh lobby under a new code, with scores and seats reset, and new players can join with that code before the next start.
 
 One player is enough to start. The creator is the person who created the lobby. If they leave and someone is still in it, the next person in the list becomes the creator.
 
@@ -167,7 +167,8 @@ Each lobby moves through this sequence:
 1. **Lobby** — players join and leave. Shakes do not score.
 2. **Playing** — the 45-second window is open, shakes score, pull fades, the chase sends chunks, and the leave button is hidden. A chunk already on the motors is allowed to finish after the clock, and the round stays open until that `DONE` is applied.
 3. **Result** — the shake-count winner is fixed, shakes no longer score, pull stays where it froze, and players can leave.
-4. The lobby ends when the last player leaves. A new round is a new lobby.
+4. **Rematch** — the creator reopens the finished lobby under a new code with the same players and fresh scores. It is back in the Lobby state, so new players can join.
+5. The lobby ends when the last player leaves.
 
 ## Later: robot motion
 

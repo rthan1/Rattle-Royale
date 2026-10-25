@@ -121,6 +121,25 @@ class LobbyBook:
         lobby.chase_id = None
         return lobby.code
 
+    def rematch(self, player_id: str) -> str:
+        """Reopen a finished lobby under a new code with the same players.
+
+        Scores and seats start fresh and new players can join until the next
+        start. The new code keeps the old round's tasks from touching it.
+        """
+        lobby = self._lobby_for(player_id)
+        if player_id != lobby.creator_id:
+            raise LobbyError("Only the creator can start a rematch.")
+        if not lobby.finished:
+            raise LobbyError("The game is not over yet.")
+        code = self._new_code()
+        players = [Player(player.player_id, player.name, seat=index) for index, player in enumerate(lobby.players)]
+        del self._lobbies[lobby.code]
+        self._lobbies[code] = Lobby(code, lobby.creator_id, players)
+        for player in players:
+            self._membership[player.player_id] = code
+        return code
+
     def record_shakes(self, player_id: str, total: object) -> tuple[str, bool]:
         """Apply a phone's running shake total. Score moves only during the game."""
         lobby = self._lobby_for(player_id)

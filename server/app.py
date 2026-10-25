@@ -100,6 +100,7 @@ PAGE = """<!DOCTYPE html>
       <p id="clock" hidden></p>
       <p id="result" hidden></p>
       <button id="start" type="button" hidden>Start game</button>
+      <button id="rematch" type="button" hidden>Rematch</button>
       <p id="waiting" hidden>Waiting for the creator to start</p>
       <button id="leave" type="button">Leave lobby</button>
     </section>
@@ -182,7 +183,12 @@ PAGE = """<!DOCTYPE html>
       document.getElementById("lobby-count").textContent =
         message.players.length + " of " + message.max;
       document.getElementById("start").hidden = !(message.creator && !message.started);
-      document.getElementById("waiting").hidden = message.creator || message.started;
+      document.getElementById("rematch").hidden = !(message.creator && message.finished);
+      const waiting = document.getElementById("waiting");
+      waiting.hidden = message.creator || (message.started && !message.finished);
+      waiting.textContent = message.finished
+        ? "Waiting for the creator to start a rematch"
+        : "Waiting for the creator to start";
       document.getElementById("leave").hidden = playing;
       const mine = message.players.find((player) => player.you);
       document.getElementById("your-seat").textContent = mine ? "You are seat " + mine.seat : "";
@@ -264,6 +270,9 @@ PAGE = """<!DOCTYPE html>
     });
     document.getElementById("start").addEventListener("click", () => {
       send({ type: "start" });
+    });
+    document.getElementById("rematch").addEventListener("click", () => {
+      send({ type: "rematch" });
     });
     document.getElementById("leave").addEventListener("click", () => {
       send({ type: "leave" });
@@ -603,6 +612,12 @@ async def handle_text(app: web.Application, socket: web.WebSocketResponse, playe
             app.setdefault("round_tasks", {})[code] = asyncio.create_task(finish_when_due(app, code))
             app.setdefault("pull_tasks", {})[code] = asyncio.create_task(fade_pull(app, code))
             app.setdefault("chase_tasks", {})[code] = asyncio.create_task(chase_round(app, code))
+        elif kind == "rematch":
+            if player_id is None:
+                raise LobbyError("You are not in a lobby.")
+            code = book.rematch(player_id)
+            log.info("rematch opened as lobby %s", code)
+            await broadcast(app, code)
         elif kind == "shakes":
             if player_id is None:
                 raise LobbyError("You are not in a lobby.")
