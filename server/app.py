@@ -213,36 +213,63 @@ PAGE = """<!DOCTYPE html>
     let suggestedCode = "";
     let audio = null;
 
+    let audioPrimed = false;
+
     function unlockAudio() {
       try {
+        if (navigator.audioSession) {
+          navigator.audioSession.type = "playback";
+        }
         const Context = window.AudioContext || window.webkitAudioContext;
         if (!audio && Context) {
           audio = new Context();
         }
-        if (audio && audio.state === "suspended") {
+        if (!audio) {
+          return;
+        }
+        if (audio.state !== "running") {
           audio.resume();
+        }
+        if (!audioPrimed) {
+          const silence = audio.createBufferSource();
+          silence.buffer = audio.createBuffer(1, 1, audio.sampleRate);
+          silence.connect(audio.destination);
+          silence.start(0);
+          audioPrimed = true;
         }
       } catch (error) {
         audio = null;
       }
     }
 
-    function beep(frequency, ms, volume = 0.15) {
-      if (!audio || audio.state !== "running") {
+    function beep(frequency, ms, volume = 0.4) {
+      if (!audio) {
+        return;
+      }
+      if (audio.state !== "running") {
+        audio.resume().catch(() => {});
         return;
       }
       const start = audio.currentTime;
+      const end = start + ms / 1000;
       const tone = audio.createOscillator();
       const gain = audio.createGain();
+      tone.type = "triangle";
       tone.frequency.value = frequency;
-      gain.gain.setValueAtTime(volume, start);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + ms / 1000);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, end);
       tone.connect(gain).connect(audio.destination);
       tone.start(start);
-      tone.stop(start + ms / 1000);
+      tone.stop(end);
     }
 
     ["touchend", "click"].forEach((kind) => document.addEventListener(kind, unlockAudio, { passive: true }));
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && audio && audio.state !== "running") {
+        audio.resume().catch(() => {});
+      }
+    });
 
     function stopCountdown() {
       if (countdownTimer !== null) {
@@ -399,7 +426,7 @@ PAGE = """<!DOCTYPE html>
         const left = roundEndsAt === null ? 0 : Math.max(0, Math.ceil((roundEndsAt - now) / 1000));
         if (left > 0 && left <= 3 && left !== lastCue) {
           lastCue = left;
-          beep(520, 90, 0.1);
+          beep(520, 90, 0.3);
         }
         clock.classList.toggle("low", left <= LOW_TIME_SECONDS);
         clock.textContent = left + "s";
@@ -1074,6 +1101,8 @@ PAGE = """<!DOCTYPE html>
       enableShakeEl.hidden = true;
       dismissKeyboard();
       shakeNoteEl.textContent = "Shaking is on.";
+      unlockAudio();
+      setTimeout(() => beep(880, 120), 60);
       if (!inLobby) {
         joinEl.hidden = false;
       }
