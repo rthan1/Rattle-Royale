@@ -86,8 +86,37 @@ PAGE = """<!DOCTYPE html>
       background: #1c1c1c;
       border-radius: 0.5rem;
     }
-    #players { list-style: none; padding: 0; margin: 0 0 1.25rem; font-size: 1.35rem; }
-    #players li { padding: 0.35rem 0; }
+    #players { list-style: none; padding: 0; margin: 0 0 1.25rem; font-size: 1.15rem; text-align: left; }
+    #players li {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.45rem 0.6rem;
+      margin: 0 0 0.35rem;
+      border-radius: 0.5rem;
+      background: #1c1c1c;
+      border-left: 4px solid transparent;
+    }
+    #players li.you { background: #1d2733; }
+    #players li.target { border-left-color: #e24b4b; }
+    #players .seat {
+      flex: none;
+      width: 1.6rem;
+      height: 1.6rem;
+      line-height: 1.6rem;
+      border-radius: 50%;
+      background: #dedede;
+      color: #111;
+      font-size: 0.85rem;
+      font-weight: bold;
+      text-align: center;
+    }
+    #players li.target .seat { background: #e24b4b; }
+    #players .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #players .tag { flex: none; font-size: 0.75rem; color: #ff9a9a; text-transform: uppercase; letter-spacing: 0.05rem; }
+    #players .bar { flex: none; width: 4.5rem; height: 0.5rem; border-radius: 0.25rem; background: #333; overflow: hidden; }
+    #players .bar span { display: block; height: 100%; background: #ffc14d; }
+    #players .num { flex: none; min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; color: #ccc; }
     #shakes { font-size: 1.6rem; margin: 0 0 0.4rem; text-align: center; }
     #shake-note { margin: 0 0 0.9rem; color: #aaa; font-size: 0.95rem; text-align: center; }
   </style>
@@ -510,18 +539,9 @@ PAGE = """<!DOCTYPE html>
       }
       const list = document.getElementById("players");
       list.replaceChildren();
+      const topPull = Math.max(1, ...message.players.map((player) => Number(player.pull) || 0));
       message.players.forEach((player) => {
-        const item = document.createElement("li");
-        const marker = player.you ? " (you)" : "";
-        let text = player.name + " — seat " + player.seat + marker;
-        if (message.started) {
-          text += " — " + player.shakes + " — pull " + Number(player.pull).toFixed(2);
-          if (player.chased) {
-            text += " — chased";
-          }
-        }
-        item.textContent = text;
-        list.append(item);
+        list.append(playerRow(player, message.started, topPull));
       });
       drawArena(message);
       const caption = document.getElementById("arena-caption");
@@ -529,6 +549,38 @@ PAGE = """<!DOCTYPE html>
       caption.textContent = captionText;
       caption.hidden = document.getElementById("arena").hidden || !captionText;
       keepAwake(message.started && !message.finished);
+    }
+
+    function playerRow(player, started, topPull) {
+      const item = document.createElement("li");
+      item.classList.toggle("you", player.you);
+      item.classList.toggle("target", started && player.chased);
+      const seat = document.createElement("span");
+      seat.className = "seat";
+      seat.textContent = String(player.seat);
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = player.you ? player.name + " (you)" : player.name;
+      item.append(seat, who);
+      if (!started) {
+        return item;
+      }
+      if (player.chased) {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = "target";
+        item.append(tag);
+      }
+      const bar = document.createElement("span");
+      bar.className = "bar";
+      const fill = document.createElement("span");
+      fill.style.width = Math.round(100 * Math.min(1, (Number(player.pull) || 0) / topPull)) + "%";
+      bar.append(fill);
+      const shakes = document.createElement("span");
+      shakes.className = "num";
+      shakes.textContent = String(player.shakes);
+      item.append(bar, shakes);
+      return item;
     }
 
     function arenaCaption(message, ready) {
